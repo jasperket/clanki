@@ -32,6 +32,10 @@ const ListCardsArgumentsSchema = z.object({
   deckName: z.string(),
 });
 
+const CreateDeckArgumentsSchema = z.object({
+  name: z.string().min(1),
+});
+
 const CreateCardArgumentsSchema = z.object({
   deckName: z.string(),
   front: z.string(),
@@ -140,6 +144,20 @@ async function main() {
     return {
       tools: [
         {
+          name: "create-deck",
+          description: "Create a new Anki deck",
+          inputSchema: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                description: "Name for the new deck",
+              },
+            },
+            required: ["name"],
+          },
+        },
+        {
           name: "list-decks",
           description: "List all available Anki decks",
           inputSchema: {
@@ -225,6 +243,21 @@ async function main() {
     const { name, arguments: args } = request.params;
 
     try {
+      if (name === "create-deck") {
+        const { name: deckName } = CreateDeckArgumentsSchema.parse(args);
+        await ankiRequest("createDeck", {
+          deck: deckName,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully created new deck "${deckName}"`,
+            },
+          ],
+        };
+      }
+
       if (name === "list-decks") {
         ListDecksArgumentsSchema.parse(args);
         const decks = await ankiRequest<string[]>("deckNames");
