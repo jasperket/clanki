@@ -43,6 +43,13 @@ const CreateCardArgumentsSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+const CreateClozeCardArgumentsSchema = z.object({
+  deckName: z.string(),
+  text: z.string(),
+  backExtra: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
 const UpdateCardArgumentsSchema = z.object({
   cardId: z.number(),
   front: z.string().optional(),
@@ -234,6 +241,33 @@ async function main() {
             required: ["cardId"],
           },
         },
+        {
+          name: "create-cloze-card",
+          description: "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              deckName: {
+                type: "string",
+                description: "Name of the deck to add the card to",
+              },
+              text: {
+                type: "string",
+                description: "Text containing cloze deletions using {{c1::text}} syntax",
+              },
+              backExtra: {
+                type: "string",
+                description: "Optional extra information to show on the back of the card",
+              },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional tags for the card",
+              },
+            },
+            required: ["deckName", "text"],
+          },
+        },
       ],
     };
   });
@@ -370,6 +404,36 @@ async function main() {
             {
               type: "text",
               text: `Successfully updated card ${cardId}`,
+            },
+          ],
+        };
+      }
+
+      if (name === "create-cloze-card") {
+        const { deckName, text, backExtra = "", tags = [] } = CreateClozeCardArgumentsSchema.parse(args);
+
+        // Validate that the text contains at least one cloze deletion
+        if (!text.includes("{{c") || !text.includes("}}")) {
+          throw new Error("Text must contain at least one cloze deletion using {{c1::text}} syntax");
+        }
+
+        await ankiRequest("addNote", {
+          note: {
+            deckName,
+            modelName: "Cloze", // Using the cloze note type
+            fields: {
+              Text: text,
+              Back: backExtra,
+            },
+            tags,
+          },
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully created new cloze card in deck "${deckName}"`,
             },
           ],
         };
