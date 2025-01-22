@@ -55,90 +55,117 @@ const UpdateCardArgumentsSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
-// Helper function for making AnkiConnect requests
+// Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
   action: string,
-  params: Record<string, any> = {}
+  params: Record<string, any> = {},
+  retries = 3,
+  delay = 1000
 ): Promise<T> {
-  console.error(`Attempting AnkiConnect request: ${action} with params:`, params);
+  console.error(
+    `Attempting AnkiConnect request: ${action} with params:`,
+    params
+  );
 
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify({
-      action,
-      version: 6,
-      params,
-    });
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await new Promise<T>((resolve, reject) => {
+        const data = JSON.stringify({
+          action,
+          version: 6,
+          params,
+        });
 
-    console.error('Request payload:', data);
+        console.error("Request payload:", data);
 
-    const options = {
-      hostname: "127.0.0.1",
-      port: 8765,
-      path: "/",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(data),
-      },
-    };
+        const options = {
+          hostname: "127.0.0.1",
+          port: 8765,
+          path: "/",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(data),
+          },
+        };
 
-    const req = http.request(options, (res) => {
-      let responseData = "";
+        const req = http.request(options, (res) => {
+          let responseData = "";
 
-      res.on("data", (chunk: Buffer) => {
-        responseData += chunk.toString();
+          res.on("data", (chunk: Buffer) => {
+            responseData += chunk.toString();
+          });
+
+          res.on("end", () => {
+            console.error(`AnkiConnect response status: ${res.statusCode}`);
+            console.error(`AnkiConnect response body: ${responseData}`);
+
+            if (res.statusCode !== 200) {
+              reject(
+                new Error(
+                  `AnkiConnect request failed with status ${res.statusCode}: ${responseData}`
+                )
+              );
+              return;
+            }
+
+            try {
+              const parsedData = JSON.parse(responseData) as AnkiResponse<T>;
+              console.error("Parsed response:", parsedData);
+
+              if (parsedData.error) {
+                reject(new Error(`AnkiConnect error: ${parsedData.error}`));
+                return;
+              }
+
+              if (
+                parsedData.result === null ||
+                parsedData.result === undefined
+              ) {
+                reject(new Error("AnkiConnect returned null/undefined result"));
+                return;
+              }
+
+              resolve(parsedData.result);
+            } catch (parseError) {
+              console.error("Parse error:", parseError);
+              reject(
+                new Error(
+                  `Failed to parse AnkiConnect response: ${responseData}`
+                )
+              );
+            }
+          });
+        });
+
+        req.on("error", (error: Error) => {
+          console.error(
+            `Error in ankiRequest (attempt ${attempt}/${retries}):`,
+            error
+          );
+          reject(error);
+        });
+
+        // Write data to request body
+        req.write(data);
+        req.end();
       });
 
-      res.on("end", () => {
-        console.error(`AnkiConnect response status: ${res.statusCode}`);
-        console.error(`AnkiConnect response body: ${responseData}`);
-
-        if (res.statusCode !== 200) {
-          reject(
-            new Error(
-              `AnkiConnect request failed with status ${res.statusCode}: ${responseData}`
-            )
-          );
-          return;
-        }
-
-        try {
-          const parsedData = JSON.parse(responseData) as AnkiResponse<T>;
-          console.error('Parsed response:', parsedData);
-          
-          if (parsedData.error) {
-            reject(new Error(`AnkiConnect error: ${parsedData.error}`));
-            return;
-          }
-          
-          if (parsedData.result === null || parsedData.result === undefined) {
-            reject(new Error('AnkiConnect returned null/undefined result'));
-            return;
-          }
-          
-          resolve(parsedData.result);
-        } catch (parseError) {
-          console.error('Parse error:', parseError);
-          reject(
-            new Error(`Failed to parse AnkiConnect response: ${responseData}`)
-          );
-        }
-      });
-    });
-
-    req.on("error", (error: Error) => {
-      console.error(`Error in ankiRequest: ${error}`);
-      reject(
-        new Error(
-          `Cannot connect to AnkiConnect at ${ANKI_CONNECT_URL}. Make sure Anki is running and AnkiConnect plugin is installed. Error: ${error.message}`
-        )
+      return result;
+    } catch (error) {
+      if (attempt === retries) {
+        throw error;
+      }
+      console.error(
+        `Attempt ${attempt}/${retries} failed, retrying after ${delay}ms...`
       );
-    });
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      // Increase delay for next attempt
+      delay *= 2;
+    }
+  }
 
-    // Write data to request body
-    req.write(data);
-    req.end();
-  });
+  throw new Error(`Failed after ${retries} attempts`);
 }
 
 async function main() {
@@ -150,9 +177,9 @@ async function main() {
     },
     {
       capabilities: {
-      tools: {},
+        tools: {},
         resources: {},
-    },
+      },
     }
   );
 
@@ -174,7 +201,6 @@ async function main() {
             required: ["name"],
           },
         },
-
 
         {
           name: "create-card",
@@ -232,7 +258,8 @@ async function main() {
         },
         {
           name: "create-cloze-card",
-          description: "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions.",
+          description:
+            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions.",
           inputSchema: {
             type: "object",
             properties: {
@@ -242,11 +269,13 @@ async function main() {
               },
               text: {
                 type: "string",
-                description: "Text containing cloze deletions using {{c1::text}} syntax",
+                description:
+                  "Text containing cloze deletions using {{c1::text}} syntax",
               },
               backExtra: {
                 type: "string",
-                description: "Optional extra information to show on the back of the card",
+                description:
+                  "Optional extra information to show on the back of the card",
               },
               tags: {
                 type: "array",
@@ -280,8 +309,6 @@ async function main() {
           ],
         };
       }
-
-
 
       if (name === "create-card") {
         const {
@@ -358,11 +385,18 @@ async function main() {
       }
 
       if (name === "create-cloze-card") {
-        const { deckName, text, backExtra = "", tags = [] } = CreateClozeCardArgumentsSchema.parse(args);
+        const {
+          deckName,
+          text,
+          backExtra = "",
+          tags = [],
+        } = CreateClozeCardArgumentsSchema.parse(args);
 
         // Validate that the text contains at least one cloze deletion
         if (!text.includes("{{c") || !text.includes("}}")) {
-          throw new Error("Text must contain at least one cloze deletion using {{c1::text}} syntax");
+          throw new Error(
+            "Text must contain at least one cloze deletion using {{c1::text}} syntax"
+          );
         }
 
         await ankiRequest("addNote", {
@@ -422,65 +456,111 @@ async function main() {
     try {
       const uri = request.params.uri;
       const match = uri.match(/^anki:\/\/deck\/(.+)$/);
-      
+
       if (!match) {
         throw new Error(`Invalid resource URI: ${uri}`);
       }
-      
+
       const deckName = decodeURIComponent(match[1]);
       console.error(`Attempting to fetch cards for deck: ${deckName}`);
 
-      // Get first note type in Anki to ensure proper query
-      const modelNames = await ankiRequest<string[]>("modelNames");
-      const modelName = modelNames[0]; // Use first available model
-      console.error('Using model:', modelName);
-
-      // Find cards with improved query
-      const cards = await ankiRequest<number[]>("findCards", {
-        query: `"deck:${deckName}" note:${modelName}`
+      // Find all notes in the deck
+      const noteIds = await ankiRequest<number[]>("findNotes", {
+        query: `deck:${deckName}`,
       });
 
-      console.error(`Found ${cards.length} cards in deck ${deckName}`);
+      console.error(`Found ${noteIds.length} notes in deck ${deckName}`);
 
-      if (cards.length === 0) {
+      if (noteIds.length === 0) {
         return {
           contents: [
             {
               uri,
               mimeType: "text/plain",
-              text: `Deck: ${deckName}\n\nNo cards found in this deck.`,
+              text: `Deck: ${deckName}\n\nNo notes found in this deck.`,
             },
           ],
         };
       }
 
-      // Get note IDs for the cards
-      const noteIds = await ankiRequest<number[]>("cardsToNotes", {
-        cards
-      });
-      console.error(`Found ${noteIds.length} notes for the cards`);
+      // Process notes in chunks of 5
+      const chunkSize = 5;
+      let allNotes: any[] = [];
 
-      // Get note info instead of card info
-      const notes = await ankiRequest<any[]>("notesInfo", {
-        notes: noteIds
-      });
-      console.error(`Retrieved ${notes.length} notes`);
+      for (let i = 0; i < noteIds.length; i += chunkSize) {
+        const chunk = noteIds.slice(i, i + chunkSize);
+        console.error(
+          `Processing notes ${i + 1} to ${Math.min(
+            i + chunkSize,
+            noteIds.length
+          )}`
+        );
+
+        const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+          notes: chunk,
+        });
+        allNotes = allNotes.concat(chunkNotes);
+      }
+
+      console.error(`Retrieved ${allNotes.length} notes total`);
+
+      // Debug log to see note structure
+      console.error(
+        "First note structure:",
+        JSON.stringify(allNotes[0], null, 2)
+      );
+      if (allNotes.length > 1) {
+        console.error(
+          "Second note structure:",
+          JSON.stringify(allNotes[1], null, 2)
+        );
+      }
 
       // Map notes to our card format
-      const cardInfo: AnkiCard[] = notes.map(note => ({
-        cardId: note.cards[0], // Use first card ID
-        fields: {
-          Front: { value: note.fields.Front },
-          Back: { value: note.fields.Back }
-        },
-        tags: note.tags
-      }));
+      const cardInfo: AnkiCard[] = allNotes.map((note) => {
+        if (note.modelName === "Cloze") {
+          return {
+            cardId: note.cards[0],
+            fields: {
+              Front: { value: note.fields.Text.value },
+              Back: {
+                value: note.fields["Back Extra"].value || "[Cloze deletion]",
+              },
+            },
+            tags: note.tags,
+          };
+        } else if (note.modelName === "Basic") {
+          return {
+            cardId: note.cards[0],
+            fields: {
+              Front: { value: note.fields.Front.value },
+              Back: { value: note.fields.Back.value },
+            },
+            tags: note.tags,
+          };
+        } else {
+          // Default case for unknown note types
+          console.error(`Unknown note type: ${note.modelName}`);
+          return {
+            cardId: note.cards[0],
+            fields: {
+              Front: { value: "[Unknown note type]" },
+              Back: { value: "[Unknown note type]" },
+            },
+            tags: note.tags,
+          };
+        }
+      });
 
       console.error(`Successfully retrieved info for ${cardInfo.length} cards`);
 
       const deckContent = cardInfo
         .map((card) => {
-          return `Card ID: ${card.cardId}\nFront: ${card.fields.Front.value}\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(", ")}\n---`;
+          return `Card ID: ${card.cardId}\nFront: ${
+            card.fields.Front.value
+          }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
+            ", "
+          )}\n---`;
         })
         .join("\n");
 
@@ -495,7 +575,11 @@ async function main() {
       };
     } catch (error) {
       console.error(`Error reading deck: ${error}`);
-      throw new Error(`Failed to read deck: ${error instanceof Error ? error.message : 'Unknown error'}. Make sure Anki is running and AnkiConnect plugin is installed.`);
+      throw new Error(
+        `Failed to read deck: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }. Make sure Anki is running and AnkiConnect plugin is installed.`
+      );
     }
   });
 
