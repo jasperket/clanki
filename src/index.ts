@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import * as http from "http";
@@ -27,10 +29,6 @@ interface AnkiResponse<T> {
 
 // Validation schemas
 const ListDecksArgumentsSchema = z.object({});
-
-const ListCardsArgumentsSchema = z.object({
-  deckName: z.string(),
-});
 
 const CreateDeckArgumentsSchema = z.object({
   name: z.string().min(1),
@@ -62,7 +60,7 @@ async function ankiRequest<T>(
   action: string,
   params: Record<string, any> = {}
 ): Promise<T> {
-  console.error(`Attempting AnkiConnect request: ${action}`);
+  console.error(`Attempting AnkiConnect request: ${action} with params:`, params);
 
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({
@@ -70,6 +68,8 @@ async function ankiRequest<T>(
       version: 6,
       params,
     });
+
+    console.error('Request payload:', data);
 
     const options = {
       hostname: "127.0.0.1",
@@ -104,12 +104,21 @@ async function ankiRequest<T>(
 
         try {
           const parsedData = JSON.parse(responseData) as AnkiResponse<T>;
+          console.error('Parsed response:', parsedData);
+          
           if (parsedData.error) {
             reject(new Error(`AnkiConnect error: ${parsedData.error}`));
             return;
           }
+          
+          if (parsedData.result === null || parsedData.result === undefined) {
+            reject(new Error('AnkiConnect returned null/undefined result'));
+            return;
+          }
+          
           resolve(parsedData.result);
         } catch (parseError) {
+          console.error('Parse error:', parseError);
           reject(
             new Error(`Failed to parse AnkiConnect response: ${responseData}`)
           );
@@ -141,8 +150,9 @@ async function main() {
     },
     {
       capabilities: {
-        tools: {},
-      },
+      tools: {},
+        resources: {},
+    },
     }
   );
 
@@ -164,29 +174,8 @@ async function main() {
             required: ["name"],
           },
         },
-        {
-          name: "list-decks",
-          description: "List all available Anki decks",
-          inputSchema: {
-            type: "object",
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          name: "list-cards",
-          description: "List all cards in a specified deck",
-          inputSchema: {
-            type: "object",
-            properties: {
-              deckName: {
-                type: "string",
-                description: "Name of the deck to list cards from",
-              },
-            },
-            required: ["deckName"],
-          },
-        },
+
+
         {
           name: "create-card",
           description: "Create a new flashcard in a specified deck",
@@ -292,48 +281,7 @@ async function main() {
         };
       }
 
-      if (name === "list-decks") {
-        ListDecksArgumentsSchema.parse(args);
-        const decks = await ankiRequest<string[]>("deckNames");
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Available decks:\n${decks.join("\n")}`,
-            },
-          ],
-        };
-      }
 
-      if (name === "list-cards") {
-        const { deckName } = ListCardsArgumentsSchema.parse(args);
-        const cards = await ankiRequest<number[]>("findCards", {
-          query: `deck:"${deckName}"`,
-        });
-
-        const cardInfo = await ankiRequest<AnkiCard[]>("cardsInfo", {
-          cards,
-        });
-
-        const formattedCards = cardInfo
-          .map((card) => {
-            return `Card ID: ${card.cardId}\nFront: ${
-              card.fields.Front.value
-            }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
-              ", "
-            )}\n---`;
-          })
-          .join("\n");
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Cards in deck "${deckName}":\n${formattedCards}`,
-            },
-          ],
-        };
-      }
 
       if (name === "create-card") {
         const {
@@ -449,6 +397,105 @@ async function main() {
         );
       }
       throw error;
+    }
+  });
+
+  // Add resource handlers for listing decks
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    try {
+      const decks = await ankiRequest<string[]>("deckNames");
+      return {
+        resources: decks.map((deck) => ({
+          uri: `anki://deck/${encodeURIComponent(deck)}`,
+          name: deck,
+          description: `Anki deck: ${deck}`,
+        })),
+      };
+    } catch (error) {
+      console.error("Error listing resources:", error);
+      throw error;
+    }
+  });
+
+  // Add handler for reading deck contents
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    try {
+      const uri = request.params.uri;
+      const match = uri.match(/^anki:\/\/deck\/(.+)$/);
+      
+      if (!match) {
+        throw new Error(`Invalid resource URI: ${uri}`);
+      }
+      
+      const deckName = decodeURIComponent(match[1]);
+      console.error(`Attempting to fetch cards for deck: ${deckName}`);
+
+      // Get first note type in Anki to ensure proper query
+      const modelNames = await ankiRequest<string[]>("modelNames");
+      const modelName = modelNames[0]; // Use first available model
+      console.error('Using model:', modelName);
+
+      // Find cards with improved query
+      const cards = await ankiRequest<number[]>("findCards", {
+        query: `"deck:${deckName}" note:${modelName}`
+      });
+
+      console.error(`Found ${cards.length} cards in deck ${deckName}`);
+
+      if (cards.length === 0) {
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: "text/plain",
+              text: `Deck: ${deckName}\n\nNo cards found in this deck.`,
+            },
+          ],
+        };
+      }
+
+      // Get note IDs for the cards
+      const noteIds = await ankiRequest<number[]>("cardsToNotes", {
+        cards
+      });
+      console.error(`Found ${noteIds.length} notes for the cards`);
+
+      // Get note info instead of card info
+      const notes = await ankiRequest<any[]>("notesInfo", {
+        notes: noteIds
+      });
+      console.error(`Retrieved ${notes.length} notes`);
+
+      // Map notes to our card format
+      const cardInfo: AnkiCard[] = notes.map(note => ({
+        cardId: note.cards[0], // Use first card ID
+        fields: {
+          Front: { value: note.fields.Front },
+          Back: { value: note.fields.Back }
+        },
+        tags: note.tags
+      }));
+
+      console.error(`Successfully retrieved info for ${cardInfo.length} cards`);
+
+      const deckContent = cardInfo
+        .map((card) => {
+          return `Card ID: ${card.cardId}\nFront: ${card.fields.Front.value}\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(", ")}\n---`;
+        })
+        .join("\n");
+
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: "text/plain",
+            text: `Deck: ${deckName}\n\n${deckContent}`,
+          },
+        ],
+      };
+    } catch (error) {
+      console.error(`Error reading deck: ${error}`);
+      throw new Error(`Failed to read deck: ${error instanceof Error ? error.message : 'Unknown error'}. Make sure Anki is running and AnkiConnect plugin is installed.`);
     }
   });
 
