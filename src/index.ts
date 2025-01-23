@@ -55,6 +55,13 @@ const UpdateCardArgumentsSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+const UpdateClozeCardArgumentsSchema = z.object({
+  cardId: z.number(),
+  text: z.string().optional(),
+  backExtra: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
 // Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
   action: string,
@@ -118,10 +125,17 @@ async function ankiRequest<T>(
                 return;
               }
 
+              // Some actions like updateNoteFields return null on success
               if (
                 parsedData.result === null ||
                 parsedData.result === undefined
               ) {
+                // For actions that are expected to return null/undefined, return an empty success response
+                if (action === "updateNoteFields" || action === "replaceTags") {
+                  resolve({} as T);
+                  return;
+                }
+                // For other actions, treat null/undefined as an error
                 reject(new Error("AnkiConnect returned null/undefined result"));
                 return;
               }
@@ -286,6 +300,35 @@ async function main() {
             required: ["deckName", "text"],
           },
         },
+        {
+          name: "update-cloze-card",
+          description: "Update an existing cloze deletion card",
+          inputSchema: {
+            type: "object",
+            properties: {
+              cardId: {
+                type: "number",
+                description: "ID of the card to update",
+              },
+              text: {
+                type: "string",
+                description:
+                  "New text with cloze deletions using {{c1::text}} syntax",
+              },
+              backExtra: {
+                type: "string",
+                description:
+                  "New extra information to show on the back of the card",
+              },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "New tags for the card",
+              },
+            },
+            required: ["cardId"],
+          },
+        },
       ],
     };
   });
@@ -416,6 +459,72 @@ async function main() {
             {
               type: "text",
               text: `Successfully created new cloze card in deck "${deckName}"`,
+            },
+          ],
+        };
+      }
+
+      if (name === "update-cloze-card") {
+        const { cardId, text, backExtra, tags } =
+          UpdateClozeCardArgumentsSchema.parse(args);
+
+        // Get the note ID from the card ID
+        const noteIdResponse = await ankiRequest<number[]>("cardsToNotes", {
+          cards: [cardId],
+        });
+
+        if (noteIdResponse.length === 0) {
+          throw new Error(`No note found for card ${cardId}`);
+        }
+
+        const noteId = noteIdResponse[0];
+
+        // Get the current note info to verify it's a cloze note
+        const noteInfo = await ankiRequest<any[]>("notesInfo", {
+          notes: [noteId],
+        });
+
+        if (noteInfo[0].modelName !== "Cloze") {
+          throw new Error("This card is not a cloze deletion card");
+        }
+
+        // Update fields if provided
+        if (text || backExtra) {
+          const fields: Record<string, string> = {};
+          if (text) {
+            // Validate that the text contains at least one cloze deletion
+            if (!text.includes("{{c") || !text.includes("}}")) {
+              throw new Error(
+                "Text must contain at least one cloze deletion using {{c1::text}} syntax"
+              );
+            }
+            fields.Text = text;
+          }
+          if (backExtra !== undefined) {
+            fields["Back Extra"] = backExtra;
+          }
+
+          await ankiRequest("updateNoteFields", {
+            note: {
+              id: noteId,
+              fields,
+            },
+          });
+        }
+
+        // Update tags if provided
+        if (tags) {
+          await ankiRequest("replaceTags", {
+            notes: [noteId],
+            tags: tags.join(" "),
+          });
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully updated cloze card ${cardId}`,
             },
           ],
         };
