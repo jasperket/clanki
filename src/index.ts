@@ -14,7 +14,7 @@ const ANKI_CONNECT_URL = "http://localhost:8765";
 
 // Type definitions for Anki responses
 interface AnkiCard {
-  cardId: number;
+  noteId: number;
   fields: {
     Front: { value: string };
     Back: { value: string };
@@ -629,7 +629,7 @@ async function main() {
       const cardInfo: AnkiCard[] = allNotes.map((note) => {
         if (note.modelName === "Cloze") {
           return {
-            cardId: note.cards[0],
+            noteId: note.noteId,
             fields: {
               Front: { value: note.fields.Text.value },
               Back: {
@@ -640,7 +640,7 @@ async function main() {
           };
         } else if (note.modelName === "Basic") {
           return {
-            cardId: note.cards[0],
+            noteId: note.noteId,
             fields: {
               Front: { value: note.fields.Front.value },
               Back: { value: note.fields.Back.value },
@@ -651,7 +651,7 @@ async function main() {
           // Default case for unknown note types
           console.error(`Unknown note type: ${note.modelName}`);
           return {
-            cardId: note.cards[0],
+            noteId: note.noteId,
             fields: {
               Front: { value: "[Unknown note type]" },
               Back: { value: "[Unknown note type]" },
@@ -665,7 +665,7 @@ async function main() {
 
       const deckContent = cardInfo
         .map((card) => {
-          return `Card ID: ${card.cardId}\nFront: ${
+          return `Card ID: ${card.noteId}\nFront: ${
             card.fields.Front.value
           }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
             ", "
