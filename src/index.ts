@@ -49,7 +49,7 @@ const CreateClozeCardArgumentsSchema = z.object({
 });
 
 const UpdateCardArgumentsSchema = z.object({
-  cardId: z.number(),
+  noteId: z.number(),
   front: z.string().optional(),
   back: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -249,9 +249,9 @@ async function main() {
           inputSchema: {
             type: "object",
             properties: {
-              cardId: {
+              noteId: {
                 type: "number",
-                description: "ID of the card to update",
+                description: "ID of the note to update",
               },
               front: {
                 type: "string",
@@ -267,7 +267,7 @@ async function main() {
                 description: "New tags for the card",
               },
             },
-            required: ["cardId"],
+            required: ["noteId"],
           },
         },
         {
@@ -384,18 +384,8 @@ async function main() {
       }
 
       if (name === "update-card") {
-        const { cardId, front, back, tags } =
+        const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
-
-        const noteIdResponse = await ankiRequest<number[]>("cardsToNotes", {
-          cards: [cardId],
-        });
-
-        if (noteIdResponse.length === 0) {
-          throw new Error(`No note found for card ${cardId}`);
-        }
-
-        const noteId = noteIdResponse[0];
 
         if (front || back) {
           const fields: Record<string, string> = {};
@@ -421,7 +411,7 @@ async function main() {
           content: [
             {
               type: "text",
-              text: `Successfully updated card ${cardId}`,
+              text: `Successfully updated note ${noteId}`,
             },
           ],
         };
@@ -665,7 +655,7 @@ async function main() {
 
       const deckContent = cardInfo
         .map((card) => {
-          return `Card ID: ${card.noteId}\nFront: ${
+          return `Note ID: ${card.noteId}\nFront: ${
             card.fields.Front.value
           }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
             ", "
