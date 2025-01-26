@@ -56,7 +56,7 @@ const UpdateCardArgumentsSchema = z.object({
 });
 
 const UpdateClozeCardArgumentsSchema = z.object({
-  cardId: z.number(),
+  noteId: z.number(),
   text: z.string().optional(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -306,9 +306,9 @@ async function main() {
           inputSchema: {
             type: "object",
             properties: {
-              cardId: {
+              noteId: {
                 type: "number",
-                description: "ID of the card to update",
+                description: "ID of the note to update",
               },
               text: {
                 type: "string",
@@ -326,7 +326,7 @@ async function main() {
                 description: "New tags for the card",
               },
             },
-            required: ["cardId"],
+            required: ["noteId"],
           },
         },
       ],
@@ -455,31 +455,24 @@ async function main() {
       }
 
       if (name === "update-cloze-card") {
-        const { cardId, text, backExtra, tags } =
+        const { noteId, text, backExtra, tags } =
           UpdateClozeCardArgumentsSchema.parse(args);
-
-        // Get the note ID from the card ID
-        const noteIdResponse = await ankiRequest<number[]>("cardsToNotes", {
-          cards: [cardId],
-        });
-
-        if (noteIdResponse.length === 0) {
-          throw new Error(`No note found for card ${cardId}`);
-        }
-
-        const noteId = noteIdResponse[0];
 
         // Get the current note info to verify it's a cloze note
         const noteInfo = await ankiRequest<any[]>("notesInfo", {
           notes: [noteId],
         });
 
+        if (noteInfo.length === 0) {
+          throw new Error(`No note found with ID ${noteId}`);
+        }
+
         if (noteInfo[0].modelName !== "Cloze") {
-          throw new Error("This card is not a cloze deletion card");
+          throw new Error("This note is not a cloze deletion note");
         }
 
         // Update fields if provided
-        if (text || backExtra) {
+        if (text || backExtra !== undefined) {
           const fields: Record<string, string> = {};
           if (text) {
             // Validate that the text contains at least one cloze deletion
@@ -491,7 +484,7 @@ async function main() {
             fields.Text = text;
           }
           if (backExtra !== undefined) {
-            fields["Back Extra"] = backExtra;
+            fields.Back = backExtra;
           }
 
           await ankiRequest("updateNoteFields", {
@@ -514,7 +507,7 @@ async function main() {
           content: [
             {
               type: "text",
-              text: `Successfully updated cloze card ${cardId}`,
+              text: `Successfully updated cloze note ${noteId}`,
             },
           ],
         };
