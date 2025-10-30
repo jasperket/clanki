@@ -1,4 +1,5 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/jasperket-clanki-badge.png)](https://mseep.ai/app/jasperket-clanki)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 # Clanki - Claude's Anki Integration
 
@@ -116,3 +117,16 @@ To modify or extend the server:
 1. Make changes to `src/index.ts`
 2. Rebuild with `npm run build`
 3. Debug with `npx @modelcontextprotocol/inspector node build/index.js`
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Acknowledgments
+
+- Built with the [Model Context Protocol SDK](https://github.com/modelcontextprotocol)
+- Integrates with [Anki](https://apps.ankiweb.net/) via [AnkiConnect](https://foosoft.net/projects/anki-connect/)
