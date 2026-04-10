@@ -62,6 +62,28 @@ const UpdateClozeCardArgumentsSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+const BulkCreateCardsArgumentsSchema = z.object({
+  deckName: z.string(),
+  cards: z.array(
+    z.object({
+      front: z.string(),
+      back: z.string(),
+      tags: z.array(z.string()).optional(),
+    })
+  ).min(1),
+});
+
+const BulkCreateClozeCardsArgumentsSchema = z.object({
+  deckName: z.string(),
+  cards: z.array(
+    z.object({
+      text: z.string(),
+      backExtra: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    })
+  ).min(1),
+});
+
 // Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
   action: string,
@@ -329,6 +351,84 @@ async function main() {
             required: ["noteId"],
           },
         },
+        {
+          name: "create-cards-bulk",
+          description:
+            "Create multiple basic flashcards in a single call. Use this instead of calling create-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              deckName: {
+                type: "string",
+                description: "Name of the deck to add the cards to",
+              },
+              cards: {
+                type: "array",
+                description: "Array of cards to create",
+                items: {
+                  type: "object",
+                  properties: {
+                    front: {
+                      type: "string",
+                      description: "Front side content of the card",
+                    },
+                    back: {
+                      type: "string",
+                      description: "Back side content of the card",
+                    },
+                    tags: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "Optional tags for the card",
+                    },
+                  },
+                  required: ["front", "back"],
+                },
+              },
+            },
+            required: ["deckName", "cards"],
+          },
+        },
+        {
+          name: "create-cloze-cards-bulk",
+          description:
+            "Create multiple cloze deletion cards in a single call. Use this instead of calling create-cloze-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              deckName: {
+                type: "string",
+                description: "Name of the deck to add the cards to",
+              },
+              cards: {
+                type: "array",
+                description: "Array of cloze cards to create",
+                items: {
+                  type: "object",
+                  properties: {
+                    text: {
+                      type: "string",
+                      description:
+                        "Text containing cloze deletions using {{c1::text}} syntax",
+                    },
+                    backExtra: {
+                      type: "string",
+                      description:
+                        "Optional extra information to show on the back of the card",
+                    },
+                    tags: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "Optional tags for the card",
+                    },
+                  },
+                  required: ["text"],
+                },
+              },
+            },
+            required: ["deckName", "cards"],
+          },
+        },
       ],
     };
   });
@@ -510,6 +610,76 @@ async function main() {
               text: `Successfully updated cloze note ${noteId}`,
             },
           ],
+        };
+      }
+
+      if (name === "create-cards-bulk") {
+        const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
+
+        const notes = cards.map((card) => ({
+          deckName,
+          modelName: "Basic",
+          fields: {
+            Front: card.front,
+            Back: card.back,
+          },
+          tags: card.tags ?? [],
+        }));
+
+        const noteIds = await ankiRequest<(number | null)[]>("addNotes", {
+          notes,
+        });
+
+        const succeeded = noteIds.filter((id) => id !== null).length;
+        const failed = noteIds.filter((id) => id === null).length;
+
+        const summary =
+          failed === 0
+            ? `Successfully created ${succeeded} card${succeeded !== 1 ? "s" : ""} in deck "${deckName}".`
+            : `Created ${succeeded} card${succeeded !== 1 ? "s" : ""} in deck "${deckName}". ${failed} card${failed !== 1 ? "s were" : " was"} skipped (likely duplicates).`;
+
+        return {
+          content: [{ type: "text", text: summary }],
+        };
+      }
+
+      if (name === "create-cloze-cards-bulk") {
+        const { deckName, cards } =
+          BulkCreateClozeCardsArgumentsSchema.parse(args);
+
+        // Validate all cloze syntax up front before sending anything to Anki
+        for (const card of cards) {
+          if (!card.text.includes("{{c") || !card.text.includes("}}")) {
+            throw new Error(
+              `Card text must contain at least one cloze deletion using {{c1::text}} syntax. Offending text: "${card.text}"`
+            );
+          }
+        }
+
+        const notes = cards.map((card) => ({
+          deckName,
+          modelName: "Cloze",
+          fields: {
+            Text: card.text,
+            Back: card.backExtra ?? "",
+          },
+          tags: card.tags ?? [],
+        }));
+
+        const noteIds = await ankiRequest<(number | null)[]>("addNotes", {
+          notes,
+        });
+
+        const succeeded = noteIds.filter((id) => id !== null).length;
+        const failed = noteIds.filter((id) => id === null).length;
+
+        const summary =
+          failed === 0
+            ? `Successfully created ${succeeded} cloze card${succeeded !== 1 ? "s" : ""} in deck "${deckName}".`
+            : `Created ${succeeded} cloze card${succeeded !== 1 ? "s" : ""} in deck "${deckName}". ${failed} card${failed !== 1 ? "s were" : " was"} skipped (likely duplicates).`;
+
+        return {
+          content: [{ type: "text", text: summary }],
         };
       }
 
