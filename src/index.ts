@@ -62,6 +62,14 @@ const UpdateClozeCardArgumentsSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
+const FindCardsArgumentsSchema = z.object({
+  query: z.string().min(1),
+});
+
+const DeleteCardsArgumentsSchema = z.object({
+  noteIds: z.array(z.number()).min(1),
+});
+
 // Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
   action: string,
@@ -131,7 +139,12 @@ async function ankiRequest<T>(
                 parsedData.result === undefined
               ) {
                 // For actions that are expected to return null/undefined, return an empty success response
-                if (action === "updateNoteFields" || action === "replaceTags") {
+                if (
+                  action === "updateNoteFields" ||
+                  action === "updateNote" ||
+                  action === "replaceTags" ||
+                  action === "deleteNotes"
+                ) {
                   resolve({} as T);
                   return;
                 }
@@ -329,6 +342,38 @@ async function main() {
             required: ["noteId"],
           },
         },
+        {
+          name: "find-cards",
+          description:
+            "Search for cards/notes using Anki's search syntax and return their note IDs, fields, and tags. Useful for finding the noteId needed to update or delete a card. Examples: 'deck:Default', 'tag:vocab', 'front:hello', or any combination of Anki search filters.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description:
+                  "Anki search query (e.g. 'deck:Default', 'tag:vocab', '\"front:some text\"'). See Anki's search documentation for the full syntax.",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "delete-card",
+          description:
+            "Delete one or more cards/notes permanently by their note IDs. Use find-cards first to obtain the note IDs. This cannot be undone.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              noteIds: {
+                type: "array",
+                items: { type: "number" },
+                description: "IDs of the notes to delete",
+              },
+            },
+            required: ["noteIds"],
+          },
+        },
       ],
     };
   });
@@ -387,25 +432,18 @@ async function main() {
         const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
 
+        const note: Record<string, any> = { id: noteId };
         if (front || back) {
           const fields: Record<string, string> = {};
           if (front) fields.Front = front;
           if (back) fields.Back = back;
-
-          await ankiRequest("updateNoteFields", {
-            note: {
-              id: noteId,
-              fields,
-            },
-          });
+          note.fields = fields;
         }
-
         if (tags) {
-          await ankiRequest("replaceTags", {
-            notes: [noteId],
-            tags: tags.join(" "),
-          });
+          note.tags = tags;
         }
+
+        await ankiRequest("updateNote", { note });
 
         return {
           content: [
@@ -471,6 +509,8 @@ async function main() {
           throw new Error("This note is not a cloze deletion note");
         }
 
+        const note: Record<string, any> = { id: noteId };
+
         // Update fields if provided
         if (text || backExtra !== undefined) {
           const fields: Record<string, string> = {};
@@ -486,28 +526,98 @@ async function main() {
           if (backExtra !== undefined) {
             fields.Back = backExtra;
           }
-
-          await ankiRequest("updateNoteFields", {
-            note: {
-              id: noteId,
-              fields,
-            },
-          });
+          note.fields = fields;
         }
 
         // Update tags if provided
         if (tags) {
-          await ankiRequest("replaceTags", {
-            notes: [noteId],
-            tags: tags.join(" "),
-          });
+          note.tags = tags;
         }
+
+        await ankiRequest("updateNote", { note });
 
         return {
           content: [
             {
               type: "text",
               text: `Successfully updated cloze note ${noteId}`,
+            },
+          ],
+        };
+      }
+
+      if (name === "find-cards") {
+        const { query } = FindCardsArgumentsSchema.parse(args);
+
+        const noteIds = await ankiRequest<number[]>("findNotes", { query });
+
+        if (noteIds.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No cards found matching query "${query}".`,
+              },
+            ],
+          };
+        }
+
+        // Fetch note details in chunks to avoid overly large requests
+        const chunkSize = 25;
+        let allNotes: any[] = [];
+        for (let i = 0; i < noteIds.length; i += chunkSize) {
+          const chunk = noteIds.slice(i, i + chunkSize);
+          const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+            notes: chunk,
+          });
+          allNotes = allNotes.concat(chunkNotes);
+        }
+
+        const cards = allNotes.map((note) => {
+          let front = "";
+          let back = "";
+          if (note.modelName === "Cloze") {
+            front = note.fields?.Text?.value ?? "";
+            back = note.fields?.Back?.value ?? "";
+          } else if (note.fields?.Front && note.fields?.Back) {
+            front = note.fields.Front.value;
+            back = note.fields.Back.value;
+          }
+          return {
+            noteId: note.noteId,
+            modelName: note.modelName,
+            front,
+            back,
+            tags: note.tags ?? [],
+          };
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Found ${cards.length} card(s) matching "${query}":\n\n${JSON.stringify(
+                cards,
+                null,
+                2
+              )}`,
+            },
+          ],
+        };
+      }
+
+      if (name === "delete-card") {
+        const { noteIds } = DeleteCardsArgumentsSchema.parse(args);
+
+        await ankiRequest("deleteNotes", { notes: noteIds });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully deleted ${noteIds.length} note(s): ${noteIds.join(
+                ", "
+              )}`,
             },
           ],
         };
