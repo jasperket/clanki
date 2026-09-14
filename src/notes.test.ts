@@ -7,9 +7,11 @@ import {
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  buildDeleteSummary,
   buildNoteUpdate,
   buildSearchSummary,
   partitionAddable,
+  partitionExistingNotes,
   summarizeNote,
   truncateSummary,
   validateClozeText,
@@ -603,5 +605,87 @@ describe("search summary", () => {
     expect(buildSearchSummary({ matched: 0, shown: [] })).toBe(
       "No notes matched that search."
     );
+  });
+});
+
+describe("deletion", () => {
+  // The reason this partitioning exists at all. AnkiConnect's `deleteNotes`
+  // answers {"result": null, "error": null} whether it removed a Note or was
+  // handed an id that was never in the collection — verified against a live
+  // collection — so a summary built from the requested ids claims deletions
+  // that never happened.
+  it("separates ids that exist from ids that do not", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [1, 2, 3],
+      // notesInfo answers positionally and returns a bare {} for a Note it
+      // cannot find.
+      found: [{ noteId: 1 }, {}, { noteId: 3 }],
+    });
+
+    expect(existing).toEqual([1, 3]);
+    expect(missing).toEqual([2]);
+  });
+
+  it("treats every id as missing when nothing is found", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [7, 8],
+      found: [{}, {}],
+    });
+
+    expect(existing).toEqual([]);
+    expect(missing).toEqual([7, 8]);
+  });
+
+  // Presence is decided by the id coming back, not by the array being the
+  // expected length — a shorter or padded response must not shift the mapping.
+  it("does not infer presence from position alone", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [10, 20],
+      found: [{ noteId: 20 }],
+    });
+
+    expect(existing).toEqual([20]);
+    expect(missing).toEqual([10]);
+  });
+
+  // Counts say Notes. Deleting one Cloze Note removes one Card per deletion, so
+  // a count of deleted Notes is never a count of Cards (ADR 0002).
+  it("counts notes, not cards", () => {
+    const message = buildDeleteSummary({ deleted: [1, 2], missing: [] });
+
+    expect(message).toContain("2 notes");
+    expect(message).not.toContain("card");
+  });
+
+  it("uses the singular for one note", () => {
+    expect(buildDeleteSummary({ deleted: [1], missing: [] })).toContain(
+      "1 note:"
+    );
+  });
+
+  // A partly stale request must not read as a clean success: the caller needs
+  // to know which of its ids were already gone.
+  it("names ids that did not exist", () => {
+    const message = buildDeleteSummary({ deleted: [1], missing: [2, 3] });
+
+    expect(message).toContain("Permanently deleted 1 note: 1.");
+    expect(message).toContain("2 notes did not exist");
+    expect(message).toContain("2, 3");
+  });
+
+  // The worst case to get wrong: nothing was deleted, and saying "deleted"
+  // would be a plain lie about a destructive operation.
+  it("does not claim a deletion when nothing existed", () => {
+    const message = buildDeleteSummary({ deleted: [], missing: [9] });
+
+    expect(message).toContain("Deleted nothing");
+    expect(message).not.toContain("Permanently deleted");
+  });
+
+  // A clean run says nothing about skipped notes.
+  it("stays quiet about missing ids when there are none", () => {
+    const message = buildDeleteSummary({ deleted: [1, 2], missing: [] });
+
+    expect(message).not.toContain("did not exist");
   });
 });
