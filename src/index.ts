@@ -7,13 +7,19 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import {
+  buildMediaArray,
+  buildMediaMessage,
+  buildSkippedMessage,
+  MediaItem,
+} from "./media.js";
 import * as http from "http";
 
 // Constants
-const ANKI_CONNECT_URL = "http://localhost:8765";
+const ANKI_CONNECT_URL = new URL("http://127.0.0.1:8765");
 
 // Type definitions for Anki responses
-interface AnkiCard {
+interface AnkiNote {
   noteId: number;
   fields: {
     Front: { value: string };
@@ -25,6 +31,17 @@ interface AnkiCard {
 interface AnkiResponse<T> {
   result: T;
   error: string | null;
+}
+
+interface NoteParams {
+  note: {
+    deckName: string;
+    modelName: string;
+    fields: Record<string, string>;
+    tags: string[];
+    picture?: MediaItem[];
+    audio?: MediaItem[];
+  };
 }
 
 // Validation schemas
@@ -39,6 +56,10 @@ const CreateCardArgumentsSchema = z.object({
   front: z.string(),
   back: z.string(),
   tags: z.array(z.string()).optional(),
+  frontImages: z.array(z.string()).optional(),
+  backImages: z.array(z.string()).optional(),
+  frontAudio: z.array(z.string()).optional(),
+  backAudio: z.array(z.string()).optional(),
 });
 
 const CreateClozeCardArgumentsSchema = z.object({
@@ -46,6 +67,10 @@ const CreateClozeCardArgumentsSchema = z.object({
   text: z.string(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  textImages: z.array(z.string()).optional(),
+  backImages: z.array(z.string()).optional(),
+  textAudio: z.array(z.string()).optional(),
+  backAudio: z.array(z.string()).optional(),
 });
 
 const UpdateCardArgumentsSchema = z.object({
@@ -108,9 +133,9 @@ async function ankiRequest<T>(
         console.error("Request payload:", data);
 
         const options = {
-          hostname: "127.0.0.1",
-          port: 8765,
-          path: "/",
+          hostname: ANKI_CONNECT_URL.hostname,
+          port: ANKI_CONNECT_URL.port,
+          path: ANKI_CONNECT_URL.pathname,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -240,7 +265,7 @@ async function main() {
 
         {
           name: "create-card",
-          description: "Create a new flashcard in a specified deck",
+          description: "Create a new flashcard in a specified deck. Supports HTML formatting in text fields. You can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded in the card.",
           inputSchema: {
             type: "object",
             properties: {
@@ -250,16 +275,36 @@ async function main() {
               },
               front: {
                 type: "string",
-                description: "Front side content of the card",
+                description: "Front side content of the card (supports HTML formatting)",
               },
               back: {
                 type: "string",
-                description: "Back side content of the card",
+                description: "Back side content of the card (supports HTML formatting)",
               },
               tags: {
                 type: "array",
                 items: { type: "string" },
                 description: "Optional tags for the card",
+              },
+              frontImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed on the front of the card. Images will be downloaded and attached automatically.",
+              },
+              backImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed on the back of the card. Images will be downloaded and attached automatically.",
+              },
+              frontAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the front of the card. Audio will be downloaded and can be played in Anki.",
+              },
+              backAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the back of the card. Audio will be downloaded and can be played in Anki.",
               },
             },
             required: ["deckName", "front", "back"],
@@ -295,7 +340,7 @@ async function main() {
         {
           name: "create-cloze-card",
           description:
-            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions.",
+            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions (e.g., {{c1::Paris}} is the capital of France). Supports HTML formatting and can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded.",
           inputSchema: {
             type: "object",
             properties: {
@@ -306,17 +351,37 @@ async function main() {
               text: {
                 type: "string",
                 description:
-                  "Text containing cloze deletions using {{c1::text}} syntax",
+                  "Text containing cloze deletions using {{c1::text}} syntax. Supports HTML formatting. Use {{c1::word}}, {{c2::word}}, etc. for multiple deletions.",
               },
               backExtra: {
                 type: "string",
                 description:
-                  "Optional extra information to show on the back of the card",
+                  "Optional extra information to show on the back of the card (supports HTML formatting)",
               },
               tags: {
                 type: "array",
                 items: { type: "string" },
                 description: "Optional tags for the card",
+              },
+              textImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed in the main text field. Images will be downloaded and attached automatically.",
+              },
+              backImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed in the back extra field. Images will be downloaded and attached automatically.",
+              },
+              textAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the main text field. Audio will be downloaded and can be played in Anki.",
+              },
+              backAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the back extra field. Audio will be downloaded and can be played in Anki.",
               },
             },
             required: ["deckName", "text"],
@@ -459,25 +524,58 @@ async function main() {
           front,
           back,
           tags = [],
+          frontImages = [],
+          backImages = [],
+          frontAudio = [],
+          backAudio = [],
         } = CreateCardArgumentsSchema.parse(args);
 
-        await ankiRequest("addNote", {
+        // Build picture and audio arrays for AnkiConnect
+        const pictureResults = [
+          buildMediaArray(frontImages, "Front", "image"),
+          buildMediaArray(backImages, "Back", "image"),
+        ];
+        const picture = pictureResults.flatMap((r) => r.items);
+
+        const audioResults = [
+          buildMediaArray(frontAudio, "Front", "audio"),
+          buildMediaArray(backAudio, "Back", "audio"),
+        ];
+        const audio = audioResults.flatMap((r) => r.items);
+
+        const noteParams: NoteParams = {
           note: {
             deckName,
-            modelName: "Basic", // Using the basic note type
+            modelName: "Basic",
             fields: {
               Front: front,
               Back: back,
             },
             tags,
           },
-        });
+        };
+
+        // Only add picture/audio arrays if they have items
+        if (picture.length > 0) {
+          noteParams.note.picture = picture;
+        }
+        if (audio.length > 0) {
+          noteParams.note.audio = audio;
+        }
+
+        await ankiRequest("addNote", noteParams);
+
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new card in deck "${deckName}"`,
+              text: `Successfully created new card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -487,10 +585,13 @@ async function main() {
         const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
 
-        if (front || back) {
+        // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
+        // field, which is different from omitting the argument. A truthiness
+        // check drops the clear and still reports success.
+        if (front !== undefined || back !== undefined) {
           const fields: Record<string, string> = {};
-          if (front) fields.Front = front;
-          if (back) fields.Back = back;
+          if (front !== undefined) fields.Front = front;
+          if (back !== undefined) fields.Back = back;
 
           await ankiRequest("updateNoteFields", {
             note: {
@@ -523,6 +624,10 @@ async function main() {
           text,
           backExtra = "",
           tags = [],
+          textImages = [],
+          backImages = [],
+          textAudio = [],
+          backAudio = [],
         } = CreateClozeCardArgumentsSchema.parse(args);
 
         // Validate that the text contains at least one cloze deletion
@@ -532,23 +637,52 @@ async function main() {
           );
         }
 
-        await ankiRequest("addNote", {
+        // Build picture and audio arrays for AnkiConnect
+        const pictureResults = [
+          buildMediaArray(textImages, "Text", "image"),
+          buildMediaArray(backImages, "Back Extra", "image"),
+        ];
+        const picture = pictureResults.flatMap((r) => r.items);
+
+        const audioResults = [
+          buildMediaArray(textAudio, "Text", "audio"),
+          buildMediaArray(backAudio, "Back Extra", "audio"),
+        ];
+        const audio = audioResults.flatMap((r) => r.items);
+
+        const noteParams: NoteParams = {
           note: {
             deckName,
-            modelName: "Cloze", // Using the cloze note type
+            modelName: "Cloze",
             fields: {
               Text: text,
-              Back: backExtra,
+              "Back Extra": backExtra,
             },
             tags,
           },
-        });
+        };
+
+        // Only add picture/audio arrays if they have items
+        if (picture.length > 0) {
+          noteParams.note.picture = picture;
+        }
+        if (audio.length > 0) {
+          noteParams.note.audio = audio;
+        }
+
+        await ankiRequest("addNote", noteParams);
+
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new cloze card in deck "${deckName}"`,
+              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -572,10 +706,12 @@ async function main() {
         }
 
         // Update fields if provided
-        if (text || backExtra !== undefined) {
+        if (text !== undefined || backExtra !== undefined) {
           const fields: Record<string, string> = {};
-          if (text) {
-            // Validate that the text contains at least one cloze deletion
+          if (text !== undefined) {
+            // Reached by `text: ""` too, which is the point: an empty Text is
+            // rejected here rather than silently dropped, since a Cloze note
+            // with no deletion generates no cards.
             if (!text.includes("{{c") || !text.includes("}}")) {
               throw new Error(
                 "Text must contain at least one cloze deletion using {{c1::text}} syntax"
@@ -584,7 +720,7 @@ async function main() {
             fields.Text = text;
           }
           if (backExtra !== undefined) {
-            fields.Back = backExtra;
+            fields["Back Extra"] = backExtra;
           }
 
           await ankiRequest("updateNoteFields", {
@@ -724,7 +860,7 @@ async function main() {
       }
 
       const deckName = decodeURIComponent(match[1]);
-      console.error(`Attempting to fetch cards for deck: ${deckName}`);
+      console.error(`Attempting to fetch notes for deck: ${deckName}`);
 
       // Find all notes in the deck
       const noteIds = await ankiRequest<number[]>("findNotes", {
@@ -778,25 +914,29 @@ async function main() {
         );
       }
 
-      // Map notes to our card format
-      const cardInfo: AnkiCard[] = allNotes.map((note) => {
+      // Map AnkiConnect notes to our own note shape
+      const noteInfo: AnkiNote[] = allNotes.map((note) => {
         if (note.modelName === "Cloze") {
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Text.value },
+              Front: { value: note.fields.Text?.value ?? "[Missing field]" },
               Back: {
-                value: note.fields["Back Extra"].value || "[Cloze deletion]",
+                value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
               },
             },
             tags: note.tags,
           };
         } else if (note.modelName === "Basic") {
+          // Anki lets users rename a note type's fields, so a note whose
+          // modelName is "Basic" is not guaranteed to have Front/Back. Without
+          // the optional chaining one renamed field throws inside this .map(),
+          // which fails the whole deck read rather than the single note.
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Front.value },
-              Back: { value: note.fields.Back.value },
+              Front: { value: note.fields.Front?.value ?? "[Missing field]" },
+              Back: { value: note.fields.Back?.value ?? "[Missing field]" },
             },
             tags: note.tags,
           };
@@ -814,13 +954,13 @@ async function main() {
         }
       });
 
-      console.error(`Successfully retrieved info for ${cardInfo.length} cards`);
+      console.error(`Successfully retrieved info for ${noteInfo.length} notes`);
 
-      const deckContent = cardInfo
-        .map((card) => {
-          return `Note ID: ${card.noteId}\nFront: ${
-            card.fields.Front.value
-          }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
+      const deckContent = noteInfo
+        .map((note) => {
+          return `Note ID: ${note.noteId}\nFront: ${
+            note.fields.Front.value
+          }\nBack: ${note.fields.Back.value}\nTags: ${note.tags.join(
             ", "
           )}\n---`;
         })
