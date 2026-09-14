@@ -7,6 +7,7 @@ import {
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  partitionAddable,
   validateClozeText,
 } from "./notes.js";
 
@@ -170,10 +171,75 @@ describe("cloze validation", () => {
   });
 });
 
+describe("addability partitioning", () => {
+  // addNotes is all-or-nothing: one duplicate fails the entire call and none of
+  // the batch is added. Splitting the batch first is what lets the other 99 of
+  // 100 land, which is the whole promise of a bulk tool.
+  it("keeps addable notes and reports the rest with Anki's own reason", () => {
+    const { addable, rejected } = partitionAddable(
+      ["a", "b", "c"],
+      [
+        { canAdd: true },
+        { canAdd: false, error: "cannot create note because it is a duplicate" },
+        { canAdd: true },
+      ]
+    );
+
+    expect(addable).toEqual(["a", "c"]);
+    expect(rejected).toEqual([
+      { position: 2, reason: "cannot create note because it is a duplicate" },
+    ]);
+  });
+
+  it("numbers rejected positions from the caller's input, 1-based", () => {
+    const { rejected } = partitionAddable(
+      ["a", "b", "c", "d"],
+      [
+        { canAdd: false, error: "x" },
+        { canAdd: true },
+        { canAdd: true },
+        { canAdd: false, error: "y" },
+      ]
+    );
+
+    expect(rejected.map((r) => r.position)).toEqual([1, 4]);
+  });
+
+  // A missing report means Anki said nothing about that note. Sending it and
+  // letting addNotes decide is safer than silently dropping a note the user
+  // asked for.
+  it("sends a note through when no report covers its position", () => {
+    const { addable, rejected } = partitionAddable(["a", "b"], [{ canAdd: true }]);
+
+    expect(addable).toEqual(["a", "b"]);
+    expect(rejected).toEqual([]);
+  });
+
+  it("falls back to a placeholder when a rejection carries no reason", () => {
+    const { rejected } = partitionAddable(["a"], [{ canAdd: false }]);
+
+    expect(rejected[0].reason).toBe("Anki gave no reason");
+  });
+
+  it("handles every note being rejected", () => {
+    const { addable, rejected } = partitionAddable(
+      ["a", "b"],
+      [
+        { canAdd: false, error: "x" },
+        { canAdd: false, error: "y" },
+      ]
+    );
+
+    expect(addable).toEqual([]);
+    expect(rejected).toHaveLength(2);
+  });
+});
+
 describe("bulk summary", () => {
   it("reports a fully successful batch", () => {
     const summary = buildBulkSummary({
-      results: [1, 2, 3],
+      added: 3,
+      rejected: [],
       deckName: "Spanish",
     });
 
@@ -181,10 +247,11 @@ describe("bulk summary", () => {
   });
 
   // Counts say Note, never Card (ADR 0002). Not just vocabulary: one Cloze
-  // Note with {{c1}} and {{c2}} produces two Cards, so a count of Notes
-  // reported as Cards is wrong on the merits.
+  // Note with {{c1}} and {{c2}} produces two Cards — verified live, where 3
+  // notes generated 4 cards — so a count of Notes reported as Cards is wrong
+  // on the merits.
   it("counts notes rather than cards", () => {
-    const summary = buildBulkSummary({ results: [1], deckName: "d" });
+    const summary = buildBulkSummary({ added: 1, rejected: [], deckName: "d" });
 
     expect(summary).toContain("1 note");
     expect(summary).not.toMatch(/card/i);
@@ -192,37 +259,45 @@ describe("bulk summary", () => {
 
   // A bare count leaves a caller whose 47th note failed with no way to find
   // it. The positions are 1-based to match the order they passed in.
-  it("names the 1-based positions of rejected notes", () => {
+  it("names the position and reason for each skipped note", () => {
     const summary = buildBulkSummary({
-      results: [1, null, 3, null],
+      added: 2,
+      rejected: [
+        { position: 2, reason: "cannot create note because it is a duplicate" },
+        { position: 4, reason: "cannot create note because it is empty" },
+      ],
       deckName: "d",
     });
 
     expect(summary).toContain("Added 2 notes");
-    expect(summary).toContain("2 notes were not added");
-    expect(summary).toContain("Positions in the input: 2, 4.");
+    expect(summary).toContain("2 notes were skipped");
+    expect(summary).toContain("[2] cannot create note because it is a duplicate");
+    expect(summary).toContain("[4] cannot create note because it is empty");
   });
 
-  // Anki returns null without a reason, so the message may suggest a cause but
-  // must not assert one — an empty first field looks identical to a duplicate.
-  it("suggests duplicates as the usual cause without asserting it", () => {
-    const summary = buildBulkSummary({ results: [null], deckName: "d" });
-
-    expect(summary).toContain("usual cause");
-    expect(summary).not.toMatch(/\bis a duplicate\b/);
-  });
-
-  it("agrees in number for a single added and a single rejected note", () => {
-    const summary = buildBulkSummary({ results: [1, null], deckName: "d" });
+  it("agrees in number for a single added and a single skipped note", () => {
+    const summary = buildBulkSummary({
+      added: 1,
+      rejected: [{ position: 2, reason: "duplicate" }],
+      deckName: "d",
+    });
 
     expect(summary).toContain("Added 1 note to");
-    expect(summary).toContain("1 note was not added");
+    expect(summary).toContain("1 note was skipped");
   });
 
-  it("handles a batch where every note was rejected", () => {
-    const summary = buildBulkSummary({ results: [null, null], deckName: "d" });
+  it("handles a batch where every note was skipped", () => {
+    const summary = buildBulkSummary({
+      added: 0,
+      rejected: [
+        { position: 1, reason: "duplicate" },
+        { position: 2, reason: "duplicate" },
+      ],
+      deckName: "d",
+    });
 
     expect(summary).toContain("Added 0 notes");
-    expect(summary).toContain("Positions in the input: 1, 2.");
+    expect(summary).toContain("[1] duplicate");
+    expect(summary).toContain("[2] duplicate");
   });
 });

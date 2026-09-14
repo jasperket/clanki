@@ -34,9 +34,11 @@ export const CLOZE_FIELD_BACK_EXTRA = "Back Extra";
 // accepts.
 const CLOZE_DELETION_PATTERN = /\{\{c\d+::.*?\}\}/s;
 
-// The AnkiConnect wire shape for one Note. `modelName` is their word for Note
-// Type; it is forced on us by the API and should not spread further (ADR 0002).
-export interface AnkiNote {
+// The AnkiConnect wire shape for a Note being created. Distinct from the
+// `AnkiNote` in index.ts, which is a Note read back from a query and carries a
+// noteId. `modelName` is AnkiConnect's word for Note Type; it is forced on us by
+// the API and should not spread further (ADR 0002).
+export interface NewNote {
   deckName: string;
   modelName: string;
   fields: Record<string, string>;
@@ -53,7 +55,7 @@ interface NoteMedia {
 // An empty `picture`/`audio` array is not the same as an absent key to
 // AnkiConnect, so the arrays are attached only when they hold something.
 // Keeping that here means no call site has to remember it.
-function withMedia(note: AnkiNote, media: NoteMedia): AnkiNote {
+function withMedia(note: NewNote, media: NoteMedia): NewNote {
   if (media.picture && media.picture.length > 0) note.picture = media.picture;
   if (media.audio && media.audio.length > 0) note.audio = media.audio;
   return note;
@@ -66,8 +68,8 @@ export function buildBasicNote(
     back: string;
     tags?: string[];
   } & NoteMedia
-): AnkiNote {
-  const note: AnkiNote = {
+): NewNote {
+  const note: NewNote = {
     deckName: params.deckName,
     modelName: "Basic",
     fields: {
@@ -86,8 +88,8 @@ export function buildClozeNote(
     backExtra?: string;
     tags?: string[];
   } & NoteMedia
-): AnkiNote {
-  const note: AnkiNote = {
+): NewNote {
+  const note: NewNote = {
     deckName: params.deckName,
     modelName: "Cloze",
     fields: {
@@ -119,31 +121,71 @@ export function validateClozeText(text: string, position?: number): void {
   );
 }
 
-// Build the outcome message for an `addNotes` batch.
+// One entry of a `canAddNotesWithErrorDetail` result.
+export interface AddabilityReport {
+  canAdd: boolean;
+  error?: string;
+}
+
+// A Note the collection will not accept, with its 1-based position in the
+// caller's input (CONTEXT.md: Rejected Note).
+export interface RejectedNote {
+  position: number;
+  reason: string;
+}
+
+// Split a batch into the Notes worth sending and the ones Anki already said it
+// will refuse.
 //
-// `addNotes` returns an array positionally aligned with the input, holding
-// `null` at each index Anki refused — a Rejected Note (CONTEXT.md). It does not
-// say why, so this message must not assert a cause: a duplicate first Field is
-// the common one, but an empty first Field or another per-Note problem looks
-// identical from here.
+// This exists because `addNotes` is all-or-nothing: a single duplicate makes
+// the whole call fail with a top-level error, and the valid Notes alongside it
+// are not added either. Asking `canAddNotesWithErrorDetail` first is what lets
+// a batch of 100 with one duplicate still add the other 99.
+//
+// The check is advisory, not a guarantee — the collection can change between
+// the two calls, and `addNotes` remains the authority. It converts the common
+// case (a repeat of something already in the deck) from a failed batch into a
+// reported skip.
+export function partitionAddable<T>(
+  notes: T[],
+  reports: AddabilityReport[]
+): { addable: T[]; rejected: RejectedNote[] } {
+  const addable: T[] = [];
+  const rejected: RejectedNote[] = [];
+
+  notes.forEach((note, index) => {
+    // A report missing for this position means Anki said nothing about it.
+    // Send it and let addNotes decide, rather than dropping it silently.
+    const report = reports[index];
+    if (!report || report.canAdd) {
+      addable.push(note);
+      return;
+    }
+    rejected.push({
+      position: index + 1,
+      reason: report.error ?? "Anki gave no reason",
+    });
+  });
+
+  return { addable, rejected };
+}
+
+// Build the outcome message for a bulk creation.
 //
 // Naming the positions rather than only counting them is the point. A caller
 // whose 47th Note failed otherwise has no way to find it, which is how failures
-// get lost — the same reasoning as buildSkippedMessage in media.ts.
+// get lost — the same reasoning as buildSkippedMessage in media.ts. The reason
+// comes from Anki itself, so this never has to guess at a cause.
 //
 // Says Note, not Card: counts follow ADR 0002, and the distinction is load-
 // bearing here, because one Cloze Note produces one Card per deletion and so a
 // count of Notes is never a count of Cards.
 export function buildBulkSummary(params: {
-  results: (number | null)[];
+  added: number;
+  rejected: RejectedNote[];
   deckName: string;
 }): string {
-  const { results, deckName } = params;
-
-  const rejected = results
-    .map((id, index) => (id === null ? index + 1 : null))
-    .filter((position): position is number => position !== null);
-  const added = results.length - rejected.length;
+  const { added, rejected, deckName } = params;
 
   const addedText = `${added} note${added !== 1 ? "s" : ""}`;
 
@@ -155,11 +197,14 @@ export function buildBulkSummary(params: {
     rejected.length !== 1 ? "s" : ""
   }`;
   const verb = rejected.length !== 1 ? "were" : "was";
+  // Anki's reasons are its own strings, not caller text, so they are safe to
+  // repeat verbatim — unlike the Note content, which is never echoed.
+  const detail = rejected
+    .map((note) => `[${note.position}] ${note.reason}`)
+    .join("; ");
 
   return (
     `Added ${addedText} to deck "${deckName}". ` +
-    `${rejectedText} ${verb} not added (Anki does not report which reason ` +
-    `applied; a duplicate first field is the usual cause). ` +
-    `Positions in the input: ${rejected.join(", ")}.`
+    `${rejectedText} ${verb} skipped: ${detail}.`
   );
 }

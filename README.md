@@ -111,9 +111,11 @@ not support media — use `create-card` for cards that need images or audio.
   - `deckName`: Name of the deck to add the cards to
   - `cards`: Array of `{ front, back, tags? }` objects (at least one)
 
-Anki skips any note it refuses — most often a duplicate, sometimes an empty
-front. The response reports how many were added and the input positions of any
-that were not, so you can correct and resend just those.
+Anki's `addNotes` is all-or-nothing — a single duplicate would otherwise fail
+the whole batch — so the tool asks which notes are addable first and sends only
+those. The response reports how many were added, and the input position and
+Anki's own reason for each note skipped, so you can correct and resend just
+those.
 
 ### create-cloze-cards-bulk
 

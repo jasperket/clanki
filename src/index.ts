@@ -14,9 +14,12 @@ import {
   MediaItem,
 } from "./media.js";
 import {
+  AddabilityReport,
+  NewNote,
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  partitionAddable,
   validateClozeText,
 } from "./notes.js";
 import * as http from "http";
@@ -117,6 +120,32 @@ const BulkCreateClozeCardsArgumentsSchema = z.object({
     })
   ).min(1),
 });
+
+// Add a batch of Notes, skipping the ones Anki will refuse.
+//
+// `addNotes` is all-or-nothing: one duplicate fails the entire call with a
+// top-level error and none of the batch is added. Asking which Notes are
+// addable first is what keeps one repeat from costing the other 99.
+async function addNoteBatch(
+  notes: NewNote[],
+  deckName: string
+): Promise<string> {
+  const reports = await ankiRequest<AddabilityReport[]>(
+    "canAddNotesWithErrorDetail",
+    { notes }
+  );
+  const { addable, rejected } = partitionAddable(notes, reports);
+
+  // Nothing left to send. Returning early matters: `addNotes` with an empty
+  // array is a pointless round trip, and on some builds an error.
+  if (addable.length === 0) {
+    return buildBulkSummary({ added: 0, rejected, deckName });
+  }
+
+  await ankiRequest<(number | null)[]>("addNotes", { notes: addable });
+
+  return buildBulkSummary({ added: addable.length, rejected, deckName });
+}
 
 // Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
@@ -743,13 +772,9 @@ async function main() {
           })
         );
 
-        const results = await ankiRequest<(number | null)[]>("addNotes", {
-          notes,
-        });
-
         return {
           content: [
-            { type: "text", text: buildBulkSummary({ results, deckName }) },
+            { type: "text", text: await addNoteBatch(notes, deckName) },
           ],
         };
       }
@@ -771,13 +796,9 @@ async function main() {
           })
         );
 
-        const results = await ankiRequest<(number | null)[]>("addNotes", {
-          notes,
-        });
-
         return {
           content: [
-            { type: "text", text: buildBulkSummary({ results, deckName }) },
+            { type: "text", text: await addNoteBatch(notes, deckName) },
           ],
         };
       }
