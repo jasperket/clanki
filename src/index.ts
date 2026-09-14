@@ -485,10 +485,13 @@ async function main() {
         const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
 
-        if (front || back) {
+        // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
+        // field, which is different from omitting the argument. A truthiness
+        // check drops the clear and still reports success.
+        if (front !== undefined || back !== undefined) {
           const fields: Record<string, string> = {};
-          if (front) fields.Front = front;
-          if (back) fields.Back = back;
+          if (front !== undefined) fields.Front = front;
+          if (back !== undefined) fields.Back = back;
 
           await ankiRequest("updateNoteFields", {
             note: {
@@ -603,10 +606,12 @@ async function main() {
         }
 
         // Update fields if provided
-        if (text || backExtra !== undefined) {
+        if (text !== undefined || backExtra !== undefined) {
           const fields: Record<string, string> = {};
-          if (text) {
-            // Validate that the text contains at least one cloze deletion
+          if (text !== undefined) {
+            // Reached by `text: ""` too, which is the point: an empty Text is
+            // rejected here rather than silently dropped, since a Cloze note
+            // with no deletion generates no cards.
             if (!text.includes("{{c") || !text.includes("}}")) {
               throw new Error(
                 "Text must contain at least one cloze deletion using {{c1::text}} syntax"
@@ -745,7 +750,7 @@ async function main() {
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Text.value },
+              Front: { value: note.fields.Text?.value ?? "[Missing field]" },
               Back: {
                 value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
               },
@@ -753,11 +758,15 @@ async function main() {
             tags: note.tags,
           };
         } else if (note.modelName === "Basic") {
+          // Anki lets users rename a note type's fields, so a note whose
+          // modelName is "Basic" is not guaranteed to have Front/Back. Without
+          // the optional chaining one renamed field throws inside this .map(),
+          // which fails the whole deck read rather than the single note.
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Front.value },
-              Back: { value: note.fields.Back.value },
+              Front: { value: note.fields.Front?.value ?? "[Missing field]" },
+              Back: { value: note.fields.Back?.value ?? "[Missing field]" },
             },
             tags: note.tags,
           };
