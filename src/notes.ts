@@ -423,11 +423,17 @@ export const DELETE_BATCH_LIMIT = 50;
 //
 // `notesInfo` answers positionally and returns a bare `{}` for a Note it cannot
 // find, so presence is decided by the id coming back, not by the array length.
+//
+// Repeated ids collapse to one. `deleteNotes` removes a Note once however many
+// times its id appears, so keeping the duplicates would report more deletions
+// than happened — the same lie this partitioning exists to prevent — and would
+// spend DELETE_BATCH_LIMIT slots on Notes that are not distinct.
 export function partitionExistingNotes(params: {
   requested: number[];
   found: any[];
 }): { existing: number[]; missing: number[] } {
-  const { requested, found } = params;
+  const { found } = params;
+  const requested = [...new Set(params.requested)];
 
   const foundIds = new Set(
     found

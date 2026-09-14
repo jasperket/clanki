@@ -648,6 +648,30 @@ describe("deletion", () => {
     expect(missing).toEqual([10]);
   });
 
+  // A repeated id is one Note. Keeping the duplicate would report more
+  // deletions than happened, which is the failure this whole partitioning
+  // exists to prevent, and would spend DELETE_BATCH_LIMIT slots on Notes that
+  // are not distinct.
+  it("collapses repeated ids to one", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [5, 5, 5],
+      found: [{ noteId: 5 }, { noteId: 5 }, { noteId: 5 }],
+    });
+
+    expect(existing).toEqual([5]);
+    expect(missing).toEqual([]);
+  });
+
+  it("collapses repeated ids that do not exist", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [9, 9],
+      found: [{}, {}],
+    });
+
+    expect(existing).toEqual([]);
+    expect(missing).toEqual([9]);
+  });
+
   // Counts say Notes. Deleting one Cloze Note removes one Card per deletion, so
   // a count of deleted Notes is never a count of Cards (ADR 0002).
   it("counts notes, not cards", () => {

@@ -865,14 +865,44 @@ async function main() {
         // `{result: null, error: null}` whether it removed a Note or was handed
         // an id that was never in the collection, so reporting what the caller
         // asked for would claim deletions that did not happen.
-        const found = await ankiRequest<any[]>("notesInfo", { notes: noteIds });
+        //
+        // Chunked like every other notesInfo caller here: DELETE_BATCH_LIMIT is
+        // twice NOTES_INFO_CHUNK_SIZE, and a batch of Notes carrying large
+        // fields is exactly the unbounded response that constant bounds.
+        let found: any[] = [];
+        for (let i = 0; i < noteIds.length; i += NOTES_INFO_CHUNK_SIZE) {
+          const chunk = noteIds.slice(i, i + NOTES_INFO_CHUNK_SIZE);
+          const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+            notes: chunk,
+          });
+          found = found.concat(chunkNotes);
+        }
+
         const { existing, missing } = partitionExistingNotes({
           requested: noteIds,
           found,
         });
 
         if (existing.length > 0) {
-          await ankiRequest("deleteNotes", { notes: existing });
+          try {
+            await ankiRequest("deleteNotes", { notes: existing });
+          } catch (error) {
+            // The ids are the only thing that makes this error actionable: a
+            // bare socket error leaves the caller unable to tell "nothing was
+            // deleted" from "some were". A retry that lands after a successful
+            // first attempt is already safe — deleteNotes is in
+            // NULL_ON_SUCCESS_ACTIONS — so reaching here means the deletion
+            // genuinely failed or its outcome is unknown.
+            const detail =
+              error instanceof Error ? error.message : String(error);
+            throw new Error(
+              `Deletion may not have completed. Attempted to delete ${
+                existing.length
+              } note(s): ${existing.join(
+                ", "
+              )}. Verify in Anki before retrying. Cause: ${detail}`
+            );
+          }
         }
 
         return {
