@@ -489,6 +489,16 @@ describe("note summaries", () => {
     expect("modelName" in summary).toBe(false);
   });
 
+  // AnkiConnect returns a null entry for an id it cannot resolve — a Note
+  // deleted between findNotes and notesInfo. Unguarded, that one entry threw
+  // inside the caller's .map() and failed the whole search or deck read.
+  it("does not throw on a null note entry", () => {
+    const summary = summarizeNote(null);
+
+    expect(summary.front).toBe("[Unknown note type]");
+    expect(summary.tags).toEqual([]);
+  });
+
   it("defaults missing tags to an empty list", () => {
     const summary = summarizeNote({
       noteId: 1,
@@ -517,6 +527,27 @@ describe("search excerpts", () => {
     expect(summary.front).toBe("bold and italic");
   });
 
+  // `<[^>]*>` cannot tell `<b>` from a less-than sign: it deleted everything
+  // between the two comparison operators, so a Field of real content came back
+  // mangled and the caller could not tell which Note it had matched.
+  it("leaves plain-text angle brackets alone", () => {
+    const summary = truncateSummary(basic("if a < b then c > d is true"), 100);
+
+    expect(summary.front).toBe("if a < b then c > d is true");
+  });
+
+  // Anki escaped these because the user wanted to see the literal text `<b>`.
+  // Decoding runs after the tag strip and nothing re-strips, so the content
+  // survives instead of being removed as if it were markup.
+  it("keeps escaped markup as visible text", () => {
+    const summary = truncateSummary(
+      basic("&lt;b&gt;not bold&lt;/b&gt;"),
+      100
+    );
+
+    expect(summary.front).toBe("<b>not bold</b>");
+  });
+
   it("decodes entities without re-forming them from a literal ampersand", () => {
     const summary = truncateSummary(basic("a &amp;lt; b"), 100);
 
@@ -528,6 +559,16 @@ describe("search excerpts", () => {
     const summary = truncateSummary(basic("x".repeat(150)), 100);
 
     expect(summary.front).toBe(`${"x".repeat(100)}…`);
+  });
+
+  // An emoji is two UTF-16 code units, so a plain slice at an odd offset cuts
+  // one in half and emits a lone surrogate that renders as a replacement
+  // character. Counting code points keeps the cut between characters.
+  it("does not split a surrogate pair when truncating", () => {
+    const summary = truncateSummary(basic("😀".repeat(60)), 51);
+
+    expect(summary.front).toBe(`${"😀".repeat(51)}…`);
+    expect(summary.front).not.toContain("�");
   });
 
   // Off-by-one guard: content exactly at the limit is complete, so marking it
@@ -587,10 +628,25 @@ describe("search summary", () => {
     const message = buildSearchSummary({
       matched: 4182,
       shown: [note(1), note(2)],
+      capped: true,
     });
 
     expect(message).toContain("4182");
     expect(message).toContain("showing the first 2");
+  });
+
+  // A short result set is not a capped one. notesInfo returns nothing for a
+  // Note deleted between findNotes and notesInfo, so `shown` is shorter than
+  // `matched` without the cap having applied — inferring the cap from that
+  // difference tells the caller to narrow a search that already returned
+  // everything that still exists.
+  it("does not claim a cap when a match went missing between calls", () => {
+    const message = buildSearchSummary({
+      matched: 3,
+      shown: [note(1), note(2)],
+    });
+
+    expect(message).not.toContain("showing the first");
   });
 
   it("does not claim a cap when everything is shown", () => {

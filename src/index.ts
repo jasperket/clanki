@@ -814,7 +814,14 @@ async function main() {
           content: [
             {
               type: "text",
-              text: buildSearchSummary({ matched: noteIds.length, shown }),
+              // `capped` comes from the id list, not from how many notes came
+              // back: notesInfo can return fewer than asked for a note deleted
+              // since findNotes, which is not a cap and must not read as one.
+              text: buildSearchSummary({
+                matched: noteIds.length,
+                shown,
+                capped: noteIds.length > SEARCH_RESULT_LIMIT,
+              }),
             },
           ],
         };
