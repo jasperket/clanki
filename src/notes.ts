@@ -434,3 +434,74 @@ export function buildSearchSummary(params: {
 
   return `${header}\n\n${body}`;
 }
+
+// How many Notes one `delete-card` call may remove. Deletion is permanent and
+// AnkiConnect offers no undo, so a single mistaken call is bounded: a caller
+// that built the wrong list of ids cannot empty a collection with it.
+export const DELETE_BATCH_LIMIT = 50;
+
+// Which of the requested Notes actually exist.
+//
+// `deleteNotes` succeeds silently on an id that is not in the collection —
+// `{"result": null, "error": null}`, identical to a real deletion — so counting
+// the ids we asked about would report deletions that never happened. The only
+// way to know is to look first.
+//
+// `notesInfo` answers positionally and returns a bare `{}` for a Note it cannot
+// find, so presence is decided by the id coming back, not by the array length.
+//
+// Repeated ids collapse to one. `deleteNotes` removes a Note once however many
+// times its id appears, so keeping the duplicates would report more deletions
+// than happened — the same lie this partitioning exists to prevent — and would
+// spend DELETE_BATCH_LIMIT slots on Notes that are not distinct.
+export function partitionExistingNotes(params: {
+  requested: number[];
+  found: any[];
+}): { existing: number[]; missing: number[] } {
+  const { found } = params;
+  const requested = [...new Set(params.requested)];
+
+  const foundIds = new Set(
+    found
+      .filter((note) => note && typeof note.noteId === "number")
+      .map((note) => note.noteId)
+  );
+
+  return {
+    existing: requested.filter((id) => foundIds.has(id)),
+    missing: requested.filter((id) => !foundIds.has(id)),
+  };
+}
+
+// Reports a deletion. Says Notes, not Cards: deleting one Cloze Note removes one
+// Card per deletion, so a count of deleted Notes is never a count of Cards
+// (ADR 0002).
+//
+// Ids are the caller's own numbers, not Note content, so naming the missing
+// ones is safe and tells the caller which of its ids were already stale.
+export function buildDeleteSummary(params: {
+  deleted: number[];
+  missing: number[];
+}): string {
+  const { deleted, missing } = params;
+
+  const noteWord = (n: number) => `${n} note${n === 1 ? "" : "s"}`;
+
+  if (deleted.length === 0) {
+    return `Deleted nothing. No notes found with ${
+      missing.length === 1 ? "ID" : "IDs"
+    }: ${missing.join(", ")}.`;
+  }
+
+  const head = `Permanently deleted ${noteWord(deleted.length)}: ${deleted.join(
+    ", "
+  )}.`;
+
+  if (missing.length === 0) return head;
+
+  return `${head} ${noteWord(
+    missing.length
+  )} did not exist and ${missing.length === 1 ? "was" : "were"} skipped: ${missing.join(
+    ", "
+  )}.`;
+}

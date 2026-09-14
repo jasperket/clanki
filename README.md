@@ -16,6 +16,7 @@ An MCP server that enables AI assistants like Claude to interact with Anki flash
 - Update existing cards and cloze deletions
 - Add and manage tags
 - Search for cards with Anki's query syntax
+- Delete cards permanently
 - View deck contents and card information
 - Full integration with AnkiConnect
 
@@ -163,6 +164,20 @@ notes matched in total.
 - Parameters:
   - `query`: Anki search query, e.g. `deck:Spanish`, `tag:vocab`,
     `deck:Spanish tag:verbs`
+
+### delete-card
+
+**Permanently deletes notes.** This cannot be undone — there is no trash to
+recover them from, and every card generated from a deleted note goes with it.
+
+Note IDs must be listed explicitly; there is no delete-by-query. Use
+`find-cards` first to obtain them and to check you have the right notes. The
+reply reports which IDs were actually deleted and which did not exist, because
+Anki reports success either way.
+
+- Parameters:
+  - `noteIds`: IDs of the notes to delete, at most 50 per call
+  - `confirm`: Must be `true`
 
 ## Resources
 
