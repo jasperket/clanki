@@ -7,6 +7,12 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import {
+  buildMediaArray,
+  buildMediaMessage,
+  buildSkippedMessage,
+  MediaItem,
+} from "./media.js";
 import * as http from "http";
 
 // Constants
@@ -27,11 +33,15 @@ interface AnkiResponse<T> {
   error: string | null;
 }
 
-interface MediaItem {
-  url: string;
-  filename: string;
-  skipHash?: string;
-  fields: string[];
+interface NoteParams {
+  note: {
+    deckName: string;
+    modelName: string;
+    fields: Record<string, string>;
+    tags: string[];
+    picture?: MediaItem[];
+    audio?: MediaItem[];
+  };
 }
 
 // Validation schemas
@@ -195,40 +205,6 @@ async function ankiRequest<T>(
   }
 
   throw new Error(`Failed after ${retries} attempts`);
-}
-
-// Helper function to build media objects for AnkiConnect
-function buildMediaArray(
-  urls: string[] | undefined,
-  fieldName: string,
-  mediaType: "image" | "audio"
-): MediaItem[] {
-  if (!urls || urls.length === 0) return [];
-
-  return urls.map((url, index) => {
-    try {
-      // Extract file extension from URL or use default
-      const urlObj = new URL(url);
-      const pathParts = urlObj.pathname.split('/');
-      const urlFilename = pathParts[pathParts.length - 1];
-
-      // Generate unique filename
-      const timestamp = Date.now();
-      const extension = urlFilename.includes('.')
-        ? urlFilename.split('.').pop()
-        : (mediaType === "image" ? "jpg" : "mp3");
-      const filename = `${mediaType}_${fieldName}_${timestamp}_${index}.${extension}`;
-
-      return {
-        url,
-        filename,
-        fields: [fieldName],
-      };
-    } catch (error) {
-      console.error(`Invalid URL skipped: ${url}`, error);
-      return null;
-    }
-  }).filter((item): item is MediaItem => item !== null);
 }
 
 async function main() {
@@ -455,17 +431,19 @@ async function main() {
         } = CreateCardArgumentsSchema.parse(args);
 
         // Build picture and audio arrays for AnkiConnect
-        const picture = [
-          ...buildMediaArray(frontImages, "Front", "image"),
-          ...buildMediaArray(backImages, "Back", "image"),
+        const pictureResults = [
+          buildMediaArray(frontImages, "Front", "image"),
+          buildMediaArray(backImages, "Back", "image"),
         ];
+        const picture = pictureResults.flatMap((r) => r.items);
 
-        const audio = [
-          ...buildMediaArray(frontAudio, "Front", "audio"),
-          ...buildMediaArray(backAudio, "Back", "audio"),
+        const audioResults = [
+          buildMediaArray(frontAudio, "Front", "audio"),
+          buildMediaArray(backAudio, "Back", "audio"),
         ];
+        const audio = audioResults.flatMap((r) => r.items);
 
-        const noteParams: any = {
+        const noteParams: NoteParams = {
           note: {
             deckName,
             modelName: "Basic",
@@ -487,16 +465,17 @@ async function main() {
 
         await ankiRequest("addNote", noteParams);
 
-        const mediaInfo = [];
-        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
-        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
-        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new card in deck "${deckName}"${mediaText}`,
+              text: `Successfully created new card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -556,17 +535,19 @@ async function main() {
         }
 
         // Build picture and audio arrays for AnkiConnect
-        const picture = [
-          ...buildMediaArray(textImages, "Text", "image"),
-          ...buildMediaArray(backImages, "Back Extra", "image"),
+        const pictureResults = [
+          buildMediaArray(textImages, "Text", "image"),
+          buildMediaArray(backImages, "Back Extra", "image"),
         ];
+        const picture = pictureResults.flatMap((r) => r.items);
 
-        const audio = [
-          ...buildMediaArray(textAudio, "Text", "audio"),
-          ...buildMediaArray(backAudio, "Back Extra", "audio"),
+        const audioResults = [
+          buildMediaArray(textAudio, "Text", "audio"),
+          buildMediaArray(backAudio, "Back Extra", "audio"),
         ];
+        const audio = audioResults.flatMap((r) => r.items);
 
-        const noteParams: any = {
+        const noteParams: NoteParams = {
           note: {
             deckName,
             modelName: "Cloze",
@@ -588,16 +569,17 @@ async function main() {
 
         await ankiRequest("addNote", noteParams);
 
-        const mediaInfo = [];
-        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
-        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
-        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}`,
+              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
