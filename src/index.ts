@@ -7,13 +7,19 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import {
+  buildMediaArray,
+  buildMediaMessage,
+  buildSkippedMessage,
+  MediaItem,
+} from "./media.js";
 import * as http from "http";
 
 // Constants
-const ANKI_CONNECT_URL = "http://localhost:8765";
+const ANKI_CONNECT_URL = new URL("http://127.0.0.1:8765");
 
 // Type definitions for Anki responses
-interface AnkiCard {
+interface AnkiNote {
   noteId: number;
   fields: {
     Front: { value: string };
@@ -27,11 +33,15 @@ interface AnkiResponse<T> {
   error: string | null;
 }
 
-interface MediaItem {
-  url: string;
-  filename: string;
-  skipHash?: string;
-  fields: string[];
+interface NoteParams {
+  note: {
+    deckName: string;
+    modelName: string;
+    fields: Record<string, string>;
+    tags: string[];
+    picture?: MediaItem[];
+    audio?: MediaItem[];
+  };
 }
 
 // Validation schemas
@@ -101,9 +111,9 @@ async function ankiRequest<T>(
         console.error("Request payload:", data);
 
         const options = {
-          hostname: "127.0.0.1",
-          port: 8765,
-          path: "/",
+          hostname: ANKI_CONNECT_URL.hostname,
+          port: ANKI_CONNECT_URL.port,
+          path: ANKI_CONNECT_URL.pathname,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -195,40 +205,6 @@ async function ankiRequest<T>(
   }
 
   throw new Error(`Failed after ${retries} attempts`);
-}
-
-// Helper function to build media objects for AnkiConnect
-function buildMediaArray(
-  urls: string[] | undefined,
-  fieldName: string,
-  mediaType: "image" | "audio"
-): MediaItem[] {
-  if (!urls || urls.length === 0) return [];
-
-  return urls.map((url, index) => {
-    try {
-      // Extract file extension from URL or use default
-      const urlObj = new URL(url);
-      const pathParts = urlObj.pathname.split('/');
-      const urlFilename = pathParts[pathParts.length - 1];
-
-      // Generate unique filename
-      const timestamp = Date.now();
-      const extension = urlFilename.includes('.')
-        ? urlFilename.split('.').pop()
-        : (mediaType === "image" ? "jpg" : "mp3");
-      const filename = `${mediaType}_${fieldName}_${timestamp}_${index}.${extension}`;
-
-      return {
-        url,
-        filename,
-        fields: [fieldName],
-      };
-    } catch (error) {
-      console.error(`Invalid URL skipped: ${url}`, error);
-      return null;
-    }
-  }).filter((item): item is MediaItem => item !== null);
 }
 
 async function main() {
@@ -455,17 +431,19 @@ async function main() {
         } = CreateCardArgumentsSchema.parse(args);
 
         // Build picture and audio arrays for AnkiConnect
-        const picture = [
-          ...buildMediaArray(frontImages, "Front", "image"),
-          ...buildMediaArray(backImages, "Back", "image"),
+        const pictureResults = [
+          buildMediaArray(frontImages, "Front", "image"),
+          buildMediaArray(backImages, "Back", "image"),
         ];
+        const picture = pictureResults.flatMap((r) => r.items);
 
-        const audio = [
-          ...buildMediaArray(frontAudio, "Front", "audio"),
-          ...buildMediaArray(backAudio, "Back", "audio"),
+        const audioResults = [
+          buildMediaArray(frontAudio, "Front", "audio"),
+          buildMediaArray(backAudio, "Back", "audio"),
         ];
+        const audio = audioResults.flatMap((r) => r.items);
 
-        const noteParams: any = {
+        const noteParams: NoteParams = {
           note: {
             deckName,
             modelName: "Basic",
@@ -487,16 +465,17 @@ async function main() {
 
         await ankiRequest("addNote", noteParams);
 
-        const mediaInfo = [];
-        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
-        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
-        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new card in deck "${deckName}"${mediaText}`,
+              text: `Successfully created new card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -506,10 +485,13 @@ async function main() {
         const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
 
-        if (front || back) {
+        // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
+        // field, which is different from omitting the argument. A truthiness
+        // check drops the clear and still reports success.
+        if (front !== undefined || back !== undefined) {
           const fields: Record<string, string> = {};
-          if (front) fields.Front = front;
-          if (back) fields.Back = back;
+          if (front !== undefined) fields.Front = front;
+          if (back !== undefined) fields.Back = back;
 
           await ankiRequest("updateNoteFields", {
             note: {
@@ -556,17 +538,19 @@ async function main() {
         }
 
         // Build picture and audio arrays for AnkiConnect
-        const picture = [
-          ...buildMediaArray(textImages, "Text", "image"),
-          ...buildMediaArray(backImages, "Back Extra", "image"),
+        const pictureResults = [
+          buildMediaArray(textImages, "Text", "image"),
+          buildMediaArray(backImages, "Back Extra", "image"),
         ];
+        const picture = pictureResults.flatMap((r) => r.items);
 
-        const audio = [
-          ...buildMediaArray(textAudio, "Text", "audio"),
-          ...buildMediaArray(backAudio, "Back Extra", "audio"),
+        const audioResults = [
+          buildMediaArray(textAudio, "Text", "audio"),
+          buildMediaArray(backAudio, "Back Extra", "audio"),
         ];
+        const audio = audioResults.flatMap((r) => r.items);
 
-        const noteParams: any = {
+        const noteParams: NoteParams = {
           note: {
             deckName,
             modelName: "Cloze",
@@ -588,16 +572,17 @@ async function main() {
 
         await ankiRequest("addNote", noteParams);
 
-        const mediaInfo = [];
-        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
-        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
-        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
+        const mediaText = buildMediaMessage(picture.length, audio.length);
+        const skippedText = buildSkippedMessage([
+          ...pictureResults.flatMap((r) => r.skipped),
+          ...audioResults.flatMap((r) => r.skipped),
+        ]);
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}`,
+              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -621,10 +606,12 @@ async function main() {
         }
 
         // Update fields if provided
-        if (text || backExtra !== undefined) {
+        if (text !== undefined || backExtra !== undefined) {
           const fields: Record<string, string> = {};
-          if (text) {
-            // Validate that the text contains at least one cloze deletion
+          if (text !== undefined) {
+            // Reached by `text: ""` too, which is the point: an empty Text is
+            // rejected here rather than silently dropped, since a Cloze note
+            // with no deletion generates no cards.
             if (!text.includes("{{c") || !text.includes("}}")) {
               throw new Error(
                 "Text must contain at least one cloze deletion using {{c1::text}} syntax"
@@ -633,7 +620,7 @@ async function main() {
             fields.Text = text;
           }
           if (backExtra !== undefined) {
-            fields.Back = backExtra;
+            fields["Back Extra"] = backExtra;
           }
 
           await ankiRequest("updateNoteFields", {
@@ -703,7 +690,7 @@ async function main() {
       }
 
       const deckName = decodeURIComponent(match[1]);
-      console.error(`Attempting to fetch cards for deck: ${deckName}`);
+      console.error(`Attempting to fetch notes for deck: ${deckName}`);
 
       // Find all notes in the deck
       const noteIds = await ankiRequest<number[]>("findNotes", {
@@ -757,25 +744,29 @@ async function main() {
         );
       }
 
-      // Map notes to our card format
-      const cardInfo: AnkiCard[] = allNotes.map((note) => {
+      // Map AnkiConnect notes to our own note shape
+      const noteInfo: AnkiNote[] = allNotes.map((note) => {
         if (note.modelName === "Cloze") {
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Text.value },
+              Front: { value: note.fields.Text?.value ?? "[Missing field]" },
               Back: {
-                value: note.fields["Back Extra"].value || "[Cloze deletion]",
+                value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
               },
             },
             tags: note.tags,
           };
         } else if (note.modelName === "Basic") {
+          // Anki lets users rename a note type's fields, so a note whose
+          // modelName is "Basic" is not guaranteed to have Front/Back. Without
+          // the optional chaining one renamed field throws inside this .map(),
+          // which fails the whole deck read rather than the single note.
           return {
             noteId: note.noteId,
             fields: {
-              Front: { value: note.fields.Front.value },
-              Back: { value: note.fields.Back.value },
+              Front: { value: note.fields.Front?.value ?? "[Missing field]" },
+              Back: { value: note.fields.Back?.value ?? "[Missing field]" },
             },
             tags: note.tags,
           };
@@ -793,13 +784,13 @@ async function main() {
         }
       });
 
-      console.error(`Successfully retrieved info for ${cardInfo.length} cards`);
+      console.error(`Successfully retrieved info for ${noteInfo.length} notes`);
 
-      const deckContent = cardInfo
-        .map((card) => {
-          return `Note ID: ${card.noteId}\nFront: ${
-            card.fields.Front.value
-          }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
+      const deckContent = noteInfo
+        .map((note) => {
+          return `Note ID: ${note.noteId}\nFront: ${
+            note.fields.Front.value
+          }\nBack: ${note.fields.Back.value}\nTags: ${note.tags.join(
             ", "
           )}\n---`;
         })

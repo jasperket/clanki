@@ -123,31 +123,64 @@ Updates an existing cloze deletion card
 ## Usage Examples
 
 ### Basic card with text only
-```
+
+```text
 "Create a flashcard in my Spanish deck with 'Hola' on the front and 'Hello' on the back"
+
 ```
 
 ### Card with images
-```
+
+```text
 "Create a flashcard about the Eiffel Tower with an image from https://example.com/eiffel.jpg on the front"
+
 ```
 
 ### Card with audio
-```
+
+```text
 "Create a pronunciation card with audio from https://example.com/pronunciation.mp3"
+
 ```
 
 ### Card with multiple media
-```
+
+```text
 "Create a card with images on both sides and audio on the back for studying animals"
+
 ```
 
 ### Cloze card with media
-```
+
+```text
 "Create a cloze card: 'The capital of {{c1::France}} is {{c2::Paris}}' with an image of the Eiffel Tower"
+
 ```
 
-**Note:** Media files are automatically downloaded from URLs and embedded into the cards. Ensure URLs are accessible and point to valid media files.
+**Note:** Media files are automatically downloaded from URLs and embedded into
+the cards. Ensure URLs are accessible and point to valid media files. A URL that
+cannot be used is reported back in the tool's response; the card is still
+created without that attachment.
+
+**Media placement:** Attachments are appended to the **end** of the field they
+belong to, after any text. You cannot position an image inline with HTML,
+because the filename is generated at upload time and is not known in advance.
+HTML formatting and media attachments therefore do not compose: use HTML to
+format your text, and the media parameters to attach files after it.
+
+## Known Issue: Missing Back Extra on Older Cloze Cards
+
+Earlier versions wrote the `backExtra` value to a field named `Back`. Anki's
+built-in Cloze note type has no such field — its fields are `Text` and
+`Back Extra` — and AnkiConnect silently discards values sent to a field that
+does not exist.
+
+As a result, **cloze cards created before this fix have no extra content
+stored**, even though the card was reported as created successfully. The text
+was never written to Anki, so it cannot be recovered automatically; re-entering
+it on the affected cards is the only fix.
+
+Cloze cards created from this version onward store `backExtra` correctly.
 
 ## Development
 
