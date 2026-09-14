@@ -7,6 +7,7 @@ import {
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  buildNoteUpdate,
   partitionAddable,
   validateClozeText,
 } from "./notes.js";
@@ -299,5 +300,106 @@ describe("bulk summary", () => {
     expect(summary).toContain("Added 0 notes");
     expect(summary).toContain("[1] duplicate");
     expect(summary).toContain("[2] duplicate");
+  });
+});
+
+describe("note updates", () => {
+  // Tag updates were broken outright on every note. The handlers sent
+  // `replaceTags({notes, tags})`, but that action renames a single Tag and
+  // rejects a `tags` argument, so AnkiConnect answered "replaceTags() got an
+  // unexpected keyword argument 'tags'" while the separate field write had
+  // already succeeded — a half-applied update reported as a failure.
+  it("carries fields and tags in a single payload", () => {
+    const update = buildNoteUpdate({
+      noteId: 1,
+      fields: { [BASIC_FIELD_FRONT]: "f" },
+      tags: ["a"],
+    });
+
+    expect(update).toEqual({
+      id: 1,
+      fields: { [BASIC_FIELD_FRONT]: "f" },
+      tags: ["a"],
+    });
+  });
+
+  // Tags reach AnkiConnect as the array the caller gave us, not joined into a
+  // string as the `replaceTags` path did.
+  //
+  // This does NOT fix issue #9. Verified against a live collection: Anki splits
+  // a Tag on its spaces itself, so ["organic chemistry"] is stored as two Tags
+  // even when sent as a single array element through `updateNote` directly.
+  // The join was never the cause. Enforcing the no-spaces rule at the schema
+  // (CONTEXT.md documents it; nothing asserts it) is the actual fix, and is
+  // deliberately left to #9.
+  it("passes tags through as an array, unjoined", () => {
+    const update = buildNoteUpdate({
+      noteId: 1,
+      fields: {},
+      tags: ["organic chemistry", "acids"],
+    });
+
+    expect(update?.tags).toEqual(["organic chemistry", "acids"]);
+  });
+
+  // `tags: []` is a real instruction to AnkiConnect — it strips every Tag from
+  // the Note. So a caller who said nothing about tags must produce a payload
+  // with no `tags` key at all, not an empty array. Same absent-key-vs-empty
+  // distinction that `withMedia` handles for picture/audio.
+  it("omits the tags key entirely when tags were not supplied", () => {
+    const update = buildNoteUpdate({
+      noteId: 1,
+      fields: { [BASIC_FIELD_FRONT]: "f" },
+    });
+
+    expect(update).not.toBeNull();
+    expect("tags" in update!).toBe(false);
+  });
+
+  // The counterpart: an explicit empty array is a deliberate "remove all tags"
+  // and must survive as one.
+  it("passes an explicit empty tag list through", () => {
+    const update = buildNoteUpdate({ noteId: 1, fields: {}, tags: [] });
+
+    expect(update?.tags).toEqual([]);
+  });
+
+  // "" is a caller clearing a field, which is not the same as omitting it. A
+  // truthiness check here drops the clear and still reports success — the
+  // regression fixed on the update handlers and reverted by PR #7's branch.
+  it("keeps a field explicitly cleared to an empty string", () => {
+    const update = buildNoteUpdate({
+      noteId: 1,
+      fields: { [BASIC_FIELD_BACK]: "" },
+    });
+
+    expect(update?.fields).toEqual({ [BASIC_FIELD_BACK]: "" });
+  });
+
+  // `updateNote` rejects a Note carrying neither fields nor tags with 'Must
+  // provide a "fields" or "tags" property.' That wire-level string is
+  // meaningless to a caller, so an empty request must never be sent: null tells
+  // the handler to skip it and report success, which is what a no-op update did
+  // before this change.
+  it("returns null when there is nothing to update", () => {
+    expect(buildNoteUpdate({ noteId: 1, fields: {} })).toBeNull();
+    expect(buildNoteUpdate({ noteId: 1 })).toBeNull();
+  });
+
+  // Cloze Notes have no "Back" field. Routing the cloze handler's fields
+  // through the same builder must not disturb the exact field names.
+  it("preserves exact cloze field names", () => {
+    const update = buildNoteUpdate({
+      noteId: 1,
+      fields: {
+        [CLOZE_FIELD_TEXT]: "{{c1::x}}",
+        [CLOZE_FIELD_BACK_EXTRA]: "extra",
+      },
+    });
+
+    expect(update?.fields).toEqual({
+      Text: "{{c1::x}}",
+      "Back Extra": "extra",
+    });
   });
 });

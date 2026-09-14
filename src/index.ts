@@ -15,10 +15,15 @@ import {
 } from "./media.js";
 import {
   AddabilityReport,
+  BASIC_FIELD_BACK,
+  BASIC_FIELD_FRONT,
+  CLOZE_FIELD_BACK_EXTRA,
+  CLOZE_FIELD_TEXT,
   NewNote,
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  buildNoteUpdate,
   partitionAddable,
   validateClozeText,
 } from "./notes.js";
@@ -26,6 +31,17 @@ import * as http from "http";
 
 // Constants
 const ANKI_CONNECT_URL = new URL("http://127.0.0.1:8765");
+
+// AnkiConnect actions that return `null` on success rather than a value. A null
+// result from anything NOT listed here is a real failure, so this must be
+// extended whenever a new mutating action is called — otherwise the action
+// succeeds in Anki and this server reports an error anyway, which for a
+// destructive action is the worst case: the caller may retry.
+const NULL_ON_SUCCESS_ACTIONS = new Set([
+  "updateNoteFields",
+  "updateNote",
+  "replaceTags",
+]);
 
 // Type definitions for Anki responses
 interface AnkiNote {
@@ -216,7 +232,7 @@ async function ankiRequest<T>(
                 parsedData.result === undefined
               ) {
                 // For actions that are expected to return null/undefined, return an empty success response
-                if (action === "updateNoteFields" || action === "replaceTags") {
+                if (NULL_ON_SUCCESS_ACTIONS.has(action)) {
                   resolve({} as T);
                   return;
                 }
@@ -617,24 +633,17 @@ async function main() {
         // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
         // field, which is different from omitting the argument. A truthiness
         // check drops the clear and still reports success.
-        if (front !== undefined || back !== undefined) {
-          const fields: Record<string, string> = {};
-          if (front !== undefined) fields.Front = front;
-          if (back !== undefined) fields.Back = back;
+        const fields: Record<string, string> = {};
+        if (front !== undefined) fields[BASIC_FIELD_FRONT] = front;
+        if (back !== undefined) fields[BASIC_FIELD_BACK] = back;
 
-          await ankiRequest("updateNoteFields", {
-            note: {
-              id: noteId,
-              fields,
-            },
-          });
-        }
+        // One `updateNote` carries both halves; see buildNoteUpdate.
+        const note = buildNoteUpdate({ noteId, fields, tags });
 
-        if (tags) {
-          await ankiRequest("replaceTags", {
-            notes: [noteId],
-            tags: tags.join(" "),
-          });
+        // Nothing to change — say so without troubling Anki, which rejects an
+        // update carrying neither Fields nor Tags.
+        if (note !== null) {
+          await ankiRequest("updateNote", { note });
         }
 
         return {
@@ -720,34 +729,23 @@ async function main() {
           throw new Error("This note is not a cloze deletion note");
         }
 
-        // Update fields if provided
-        if (text !== undefined || backExtra !== undefined) {
-          const fields: Record<string, string> = {};
-          if (text !== undefined) {
-            // Reached by `text: ""` too, which is the point: an empty Text is
-            // rejected here rather than silently dropped, since a Cloze note
-            // with no deletion generates no cards.
-            validateClozeText(text);
-            fields.Text = text;
-          }
-          if (backExtra !== undefined) {
-            fields["Back Extra"] = backExtra;
-          }
-
-          await ankiRequest("updateNoteFields", {
-            note: {
-              id: noteId,
-              fields,
-            },
-          });
+        const fields: Record<string, string> = {};
+        if (text !== undefined) {
+          // Reached by `text: ""` too, which is the point: an empty Text is
+          // rejected here rather than silently dropped, since a Cloze note
+          // with no deletion generates no cards.
+          validateClozeText(text);
+          fields[CLOZE_FIELD_TEXT] = text;
+        }
+        if (backExtra !== undefined) {
+          fields[CLOZE_FIELD_BACK_EXTRA] = backExtra;
         }
 
-        // Update tags if provided
-        if (tags) {
-          await ankiRequest("replaceTags", {
-            notes: [noteId],
-            tags: tags.join(" "),
-          });
+        // Fields and Tags in one request; see the note on buildNoteUpdate.
+        const note = buildNoteUpdate({ noteId, fields, tags });
+
+        if (note !== null) {
+          await ankiRequest("updateNote", { note });
         }
 
         return {
