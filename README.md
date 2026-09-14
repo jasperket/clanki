@@ -148,6 +148,19 @@ Updates an existing cloze deletion card
 ```
 
 **Note:** Media files are automatically downloaded from URLs and embedded into the cards. Ensure URLs are accessible and point to valid media files.
+## Known Issue: Missing Back Extra on Older Cloze Cards
+
+Earlier versions wrote the `backExtra` value to a field named `Back`. Anki's
+built-in Cloze note type has no such field — its fields are `Text` and
+`Back Extra` — and AnkiConnect silently discards values sent to a field that
+does not exist.
+
+As a result, **cloze cards created before this fix have no extra content
+stored**, even though the card was reported as created successfully. The text
+was never written to Anki, so it cannot be recovered automatically; re-entering
+it on the affected cards is the only fix.
+
+Cloze cards created from this version onward store `backExtra` correctly.
 
 ## Development
 

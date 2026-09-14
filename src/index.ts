@@ -633,7 +633,7 @@ async function main() {
             fields.Text = text;
           }
           if (backExtra !== undefined) {
-            fields.Back = backExtra;
+            fields["Back Extra"] = backExtra;
           }
 
           await ankiRequest("updateNoteFields", {
@@ -765,7 +765,7 @@ async function main() {
             fields: {
               Front: { value: note.fields.Text.value },
               Back: {
-                value: note.fields["Back Extra"].value || "[Cloze deletion]",
+                value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
               },
             },
             tags: note.tags,
