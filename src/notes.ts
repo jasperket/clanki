@@ -208,3 +208,54 @@ export function buildBulkSummary(params: {
     `${rejectedText} ${verb} skipped: ${detail}.`
   );
 }
+
+// The payload AnkiConnect's `updateNote` takes: a Note id plus whichever of
+// Fields and Tags are actually changing.
+export interface NoteUpdate {
+  id: number;
+  fields?: Record<string, string>;
+  tags?: string[];
+}
+
+// Builds the `updateNote` payload, or returns null when the caller asked for no
+// change at all.
+//
+// Three things are load-bearing here:
+//
+//   Fields and Tags go in ONE request. The previous code sent `updateNoteFields`
+//   followed by `replaceTags`, but `replaceTags` renames a single Tag
+//   (`replaceTags(notes, tag_to_replace, replace_with_tag)`) and rejects a
+//   `tags` argument outright, so every Tag update failed while the Field half
+//   succeeded.
+//
+//   Tags stay an array. The old path joined them with spaces, but that is not
+//   what caused issue #9: Anki splits a Tag on its own spaces regardless, so
+//   ["organic chemistry"] is stored as two Tags even sent as one element. The
+//   array is simply what `updateNote` takes.
+//
+//   An absent key is not an empty value. `tags: []` is a valid instruction to
+//   AnkiConnect meaning "remove every Tag from this Note", so a caller who
+//   omitted `tags` must produce a payload with no `tags` key at all — the same
+//   distinction `withMedia` exists for above.
+//
+//   Null, not an empty payload. `updateNote` rejects a Note carrying neither
+//   Fields nor Tags ('Must provide a "fields" or "tags" property.'), and that
+//   wire-level message means nothing to a caller. Returning null lets the
+//   handler skip the request instead of forwarding an error.
+export function buildNoteUpdate(params: {
+  noteId: number;
+  fields?: Record<string, string>;
+  tags?: string[];
+}): NoteUpdate | null {
+  const { noteId, fields, tags } = params;
+
+  const hasFields = fields !== undefined && Object.keys(fields).length > 0;
+  const hasTags = tags !== undefined;
+
+  if (!hasFields && !hasTags) return null;
+
+  const update: NoteUpdate = { id: noteId };
+  if (hasFields) update.fields = fields;
+  if (hasTags) update.tags = tags;
+  return update;
+}
