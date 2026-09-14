@@ -10,6 +10,7 @@ An MCP server that enables AI assistants like Claude to interact with Anki flash
 - Create and manage Anki decks
 - Create basic flashcards with front/back content
 - Create cloze deletion cards
+- Create many cards at once in a single request
 - **Attach images and audio from URLs** - automatically downloaded and embedded
 - HTML formatting support in card fields
 - Update existing cards and cloze deletions
@@ -99,6 +100,34 @@ Creates a new cloze deletion card in a specified deck. Supports HTML formatting 
   - `backImages`: (Optional) Array of image URLs for the back extra field
   - `textAudio`: (Optional) Array of audio URLs for the text field
   - `backAudio`: (Optional) Array of audio URLs for the back extra field
+
+### create-cards-bulk
+
+Creates many basic cards in one request. Prefer this over repeated `create-card`
+calls for a batch: it sends a single request to Anki regardless of size. Does
+not support media — use `create-card` for cards that need images or audio.
+
+- Parameters:
+  - `deckName`: Name of the deck to add the cards to
+  - `cards`: Array of `{ front, back, tags? }` objects (at least one)
+
+Anki's `addNotes` is all-or-nothing — a single duplicate would otherwise fail
+the whole batch — so the tool asks which notes are addable first and sends only
+those. The response reports how many were added, and the input position and
+Anki's own reason for each note skipped, so you can correct and resend just
+those.
+
+### create-cloze-cards-bulk
+
+Creates many cloze deletion cards in one request. Same trade-offs as
+`create-cards-bulk`; use `create-cloze-card` when you need media.
+
+- Parameters:
+  - `deckName`: Name of the deck to add the cards to
+  - `cards`: Array of `{ text, backExtra?, tags? }` objects (at least one)
+
+Cloze syntax is validated for the whole batch before anything is sent, so a
+malformed entry fails the call rather than leaving a partial batch in the deck.
 
 ### update-card
 

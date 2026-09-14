@@ -13,6 +13,15 @@ import {
   buildSkippedMessage,
   MediaItem,
 } from "./media.js";
+import {
+  AddabilityReport,
+  NewNote,
+  buildBasicNote,
+  buildBulkSummary,
+  buildClozeNote,
+  partitionAddable,
+  validateClozeText,
+} from "./notes.js";
 import * as http from "http";
 
 // Constants
@@ -53,7 +62,10 @@ const CreateDeckArgumentsSchema = z.object({
 
 const CreateCardArgumentsSchema = z.object({
   deckName: z.string(),
-  front: z.string(),
+  // Anki refuses a Note whose first Field is empty, and in a bulk batch that
+  // refusal arrives as an anonymous null. Rejecting it here names the problem
+  // instead. `back` stays unconstrained — an empty back is a legitimate Note.
+  front: z.string().min(1),
   back: z.string(),
   tags: z.array(z.string()).optional(),
   frontImages: z.array(z.string()).optional(),
@@ -86,6 +98,54 @@ const UpdateClozeCardArgumentsSchema = z.object({
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
 });
+
+const BulkCreateCardsArgumentsSchema = z.object({
+  deckName: z.string(),
+  cards: z.array(
+    z.object({
+      front: z.string().min(1),
+      back: z.string(),
+      tags: z.array(z.string()).optional(),
+    })
+  ).min(1),
+});
+
+const BulkCreateClozeCardsArgumentsSchema = z.object({
+  deckName: z.string(),
+  cards: z.array(
+    z.object({
+      text: z.string().min(1),
+      backExtra: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    })
+  ).min(1),
+});
+
+// Add a batch of Notes, skipping the ones Anki will refuse.
+//
+// `addNotes` is all-or-nothing: one duplicate fails the entire call with a
+// top-level error and none of the batch is added. Asking which Notes are
+// addable first is what keeps one repeat from costing the other 99.
+async function addNoteBatch(
+  notes: NewNote[],
+  deckName: string
+): Promise<string> {
+  const reports = await ankiRequest<AddabilityReport[]>(
+    "canAddNotesWithErrorDetail",
+    { notes }
+  );
+  const { addable, rejected } = partitionAddable(notes, reports);
+
+  // Nothing left to send. Returning early matters: `addNotes` with an empty
+  // array is a pointless round trip, and on some builds an error.
+  if (addable.length === 0) {
+    return buildBulkSummary({ added: 0, rejected, deckName });
+  }
+
+  await ankiRequest<(number | null)[]>("addNotes", { notes: addable });
+
+  return buildBulkSummary({ added: addable.length, rejected, deckName });
+}
 
 // Helper function for making AnkiConnect requests with retries
 async function ankiRequest<T>(
@@ -394,6 +454,84 @@ async function main() {
             required: ["noteId"],
           },
         },
+        {
+          name: "create-cards-bulk",
+          description:
+            "Create multiple basic cards in a single call. Use this instead of calling create-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch. Does not support images or audio: use create-card for cards that need media.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              deckName: {
+                type: "string",
+                description: "Name of the deck to add the cards to",
+              },
+              cards: {
+                type: "array",
+                description: "Array of cards to create",
+                items: {
+                  type: "object",
+                  properties: {
+                    front: {
+                      type: "string",
+                      description: "Front side content of the card",
+                    },
+                    back: {
+                      type: "string",
+                      description: "Back side content of the card",
+                    },
+                    tags: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "Optional tags for the card",
+                    },
+                  },
+                  required: ["front", "back"],
+                },
+              },
+            },
+            required: ["deckName", "cards"],
+          },
+        },
+        {
+          name: "create-cloze-cards-bulk",
+          description:
+            "Create multiple cloze deletion cards in a single call. Use this instead of calling create-cloze-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch. Does not support images or audio: use create-cloze-card for cards that need media.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              deckName: {
+                type: "string",
+                description: "Name of the deck to add the cards to",
+              },
+              cards: {
+                type: "array",
+                description: "Array of cloze cards to create",
+                items: {
+                  type: "object",
+                  properties: {
+                    text: {
+                      type: "string",
+                      description:
+                        "Text containing cloze deletions using {{c1::text}} syntax",
+                    },
+                    backExtra: {
+                      type: "string",
+                      description:
+                        "Optional extra information to show on the back of the card",
+                    },
+                    tags: {
+                      type: "array",
+                      items: { type: "string" },
+                      description: "Optional tags for the card",
+                    },
+                  },
+                  required: ["text"],
+                },
+              },
+            },
+            required: ["deckName", "cards"],
+          },
+        },
       ],
     };
   });
@@ -444,24 +582,15 @@ async function main() {
         const audio = audioResults.flatMap((r) => r.items);
 
         const noteParams: NoteParams = {
-          note: {
+          note: buildBasicNote({
             deckName,
-            modelName: "Basic",
-            fields: {
-              Front: front,
-              Back: back,
-            },
+            front,
+            back,
             tags,
-          },
+            picture,
+            audio,
+          }),
         };
-
-        // Only add picture/audio arrays if they have items
-        if (picture.length > 0) {
-          noteParams.note.picture = picture;
-        }
-        if (audio.length > 0) {
-          noteParams.note.audio = audio;
-        }
 
         await ankiRequest("addNote", noteParams);
 
@@ -530,12 +659,7 @@ async function main() {
           backAudio = [],
         } = CreateClozeCardArgumentsSchema.parse(args);
 
-        // Validate that the text contains at least one cloze deletion
-        if (!text.includes("{{c") || !text.includes("}}")) {
-          throw new Error(
-            "Text must contain at least one cloze deletion using {{c1::text}} syntax"
-          );
-        }
+        validateClozeText(text);
 
         // Build picture and audio arrays for AnkiConnect
         const pictureResults = [
@@ -551,24 +675,15 @@ async function main() {
         const audio = audioResults.flatMap((r) => r.items);
 
         const noteParams: NoteParams = {
-          note: {
+          note: buildClozeNote({
             deckName,
-            modelName: "Cloze",
-            fields: {
-              Text: text,
-              "Back Extra": backExtra,
-            },
+            text,
+            backExtra,
             tags,
-          },
+            picture,
+            audio,
+          }),
         };
-
-        // Only add picture/audio arrays if they have items
-        if (picture.length > 0) {
-          noteParams.note.picture = picture;
-        }
-        if (audio.length > 0) {
-          noteParams.note.audio = audio;
-        }
 
         await ankiRequest("addNote", noteParams);
 
@@ -612,11 +727,7 @@ async function main() {
             // Reached by `text: ""` too, which is the point: an empty Text is
             // rejected here rather than silently dropped, since a Cloze note
             // with no deletion generates no cards.
-            if (!text.includes("{{c") || !text.includes("}}")) {
-              throw new Error(
-                "Text must contain at least one cloze deletion using {{c1::text}} syntax"
-              );
-            }
+            validateClozeText(text);
             fields.Text = text;
           }
           if (backExtra !== undefined) {
@@ -645,6 +756,49 @@ async function main() {
               type: "text",
               text: `Successfully updated cloze note ${noteId}`,
             },
+          ],
+        };
+      }
+
+      if (name === "create-cards-bulk") {
+        const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
+
+        const notes = cards.map((card) =>
+          buildBasicNote({
+            deckName,
+            front: card.front,
+            back: card.back,
+            tags: card.tags,
+          })
+        );
+
+        return {
+          content: [
+            { type: "text", text: await addNoteBatch(notes, deckName) },
+          ],
+        };
+      }
+
+      if (name === "create-cloze-cards-bulk") {
+        const { deckName, cards } =
+          BulkCreateClozeCardsArgumentsSchema.parse(args);
+
+        // Validate the whole batch before sending anything, so a malformed
+        // entry fails the call rather than leaving a partial batch in the deck.
+        cards.forEach((card, index) => validateClozeText(card.text, index + 1));
+
+        const notes = cards.map((card) =>
+          buildClozeNote({
+            deckName,
+            text: card.text,
+            backExtra: card.backExtra,
+            tags: card.tags,
+          })
+        );
+
+        return {
+          content: [
+            { type: "text", text: await addNoteBatch(notes, deckName) },
           ],
         };
       }

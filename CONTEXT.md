@@ -42,6 +42,13 @@ number generates its own Card.
 _Avoid_: using this for the Note itself ("a cloze deletion" meaning the whole
 card), or as a display placeholder
 
+**Rejected Note**:
+A Note in a bulk request that the collection will not accept, identified by its
+position in the caller's input and the reason Anki gave. Most often a duplicate
+first Field; an empty first Field is another. `addNotes` is all-or-nothing, so
+these are found with `canAddNotesWithErrorDetail` before sending.
+_Avoid_: duplicate (that is one cause among several, not the category)
+
 **Media**:
 An image or audio file attached to a Note by URL. AnkiConnect downloads the file
 and appends a reference tag to the end of the named Field; this server never
