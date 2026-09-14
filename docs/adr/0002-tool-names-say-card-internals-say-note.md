@@ -11,3 +11,8 @@ Everywhere else — identifiers, comments, log lines and especially counts — w
 say Note, because conflating the two produced a real bug: the deck resource
 reported a note count as a number of cards, which is wrong for any deck holding
 cloze notes. See [CONTEXT.md](../../CONTEXT.md) for the definitions.
+
+The bulk creation tools are a second instance of the same rule: their tool
+names are `create-cards-bulk` and `create-cloze-cards-bulk`, but the summary
+they return counts Notes, because one Cloze Note produces one Card per
+deletion and a count of Notes is therefore never a count of Cards.

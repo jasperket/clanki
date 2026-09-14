@@ -42,6 +42,12 @@ number generates its own Card.
 _Avoid_: using this for the Note itself ("a cloze deletion" meaning the whole
 card), or as a display placeholder
 
+**Rejected Note**:
+An entry in an `addNotes` result that Anki returned as `null`, meaning that Note
+was not added. Anki does not report the reason; a duplicate first Field is the
+common cause, an empty first Field another.
+_Avoid_: duplicate (that is one cause among several, not the category)
+
 **Media**:
 An image or audio file attached to a Note by URL. AnkiConnect downloads the file
 and appends a reference tag to the end of the named Field; this server never
