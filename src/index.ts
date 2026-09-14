@@ -10,10 +10,10 @@ import { z } from "zod";
 import * as http from "http";
 
 // Constants
-const ANKI_CONNECT_URL = "http://localhost:8765";
+const ANKI_CONNECT_URL = new URL("http://127.0.0.1:8765");
 
 // Type definitions for Anki responses
-interface AnkiCard {
+interface AnkiNote {
   noteId: number;
   fields: {
     Front: { value: string };
@@ -101,9 +101,9 @@ async function ankiRequest<T>(
         console.error("Request payload:", data);
 
         const options = {
-          hostname: "127.0.0.1",
-          port: 8765,
-          path: "/",
+          hostname: ANKI_CONNECT_URL.hostname,
+          port: ANKI_CONNECT_URL.port,
+          path: ANKI_CONNECT_URL.pathname,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -703,7 +703,7 @@ async function main() {
       }
 
       const deckName = decodeURIComponent(match[1]);
-      console.error(`Attempting to fetch cards for deck: ${deckName}`);
+      console.error(`Attempting to fetch notes for deck: ${deckName}`);
 
       // Find all notes in the deck
       const noteIds = await ankiRequest<number[]>("findNotes", {
@@ -757,8 +757,8 @@ async function main() {
         );
       }
 
-      // Map notes to our card format
-      const cardInfo: AnkiCard[] = allNotes.map((note) => {
+      // Map AnkiConnect notes to our own note shape
+      const noteInfo: AnkiNote[] = allNotes.map((note) => {
         if (note.modelName === "Cloze") {
           return {
             noteId: note.noteId,
@@ -793,13 +793,13 @@ async function main() {
         }
       });
 
-      console.error(`Successfully retrieved info for ${cardInfo.length} cards`);
+      console.error(`Successfully retrieved info for ${noteInfo.length} notes`);
 
-      const deckContent = cardInfo
-        .map((card) => {
-          return `Note ID: ${card.noteId}\nFront: ${
-            card.fields.Front.value
-          }\nBack: ${card.fields.Back.value}\nTags: ${card.tags.join(
+      const deckContent = noteInfo
+        .map((note) => {
+          return `Note ID: ${note.noteId}\nFront: ${
+            note.fields.Front.value
+          }\nBack: ${note.fields.Back.value}\nTags: ${note.tags.join(
             ", "
           )}\n---`;
         })
