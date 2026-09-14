@@ -10,6 +10,8 @@ An MCP server that enables AI assistants like Claude to interact with Anki flash
 - Create and manage Anki decks
 - Create basic flashcards with front/back content
 - Create cloze deletion cards
+- **Attach images and audio from URLs** - automatically downloaded and embedded
+- HTML formatting support in card fields
 - Update existing cards and cloze deletions
 - Add and manage tags
 - View deck contents and card information
@@ -72,23 +74,31 @@ Creates a new Anki deck
 
 ### create-card
 
-Creates a new basic flashcard in a specified deck
+Creates a new basic flashcard in a specified deck. Supports HTML formatting and media attachments.
 
 - Parameters:
   - `deckName`: Name of the deck to add the card to
-  - `front`: Front side content of the card
-  - `back`: Back side content of the card
+  - `front`: Front side content of the card (supports HTML)
+  - `back`: Back side content of the card (supports HTML)
   - `tags`: (Optional) Array of tags for the card
+  - `frontImages`: (Optional) Array of image URLs for the front
+  - `backImages`: (Optional) Array of image URLs for the back
+  - `frontAudio`: (Optional) Array of audio URLs for the front
+  - `backAudio`: (Optional) Array of audio URLs for the back
 
 ### create-cloze-card
 
-Creates a new cloze deletion card in a specified deck
+Creates a new cloze deletion card in a specified deck. Supports HTML formatting and media attachments.
 
 - Parameters:
   - `deckName`: Name of the deck to add the card to
-  - `text`: Text containing cloze deletions using {{c1::text}} syntax
-  - `backExtra`: (Optional) Extra information to show on the back of the card
+  - `text`: Text containing cloze deletions using {{c1::text}} syntax (supports HTML)
+  - `backExtra`: (Optional) Extra information to show on the back of the card (supports HTML)
   - `tags`: (Optional) Array of tags for the card
+  - `textImages`: (Optional) Array of image URLs for the text field
+  - `backImages`: (Optional) Array of image URLs for the back extra field
+  - `textAudio`: (Optional) Array of audio URLs for the text field
+  - `backAudio`: (Optional) Array of audio URLs for the back extra field
 
 ### update-card
 
@@ -109,6 +119,35 @@ Updates an existing cloze deletion card
   - `text`: (Optional) New text with cloze deletions
   - `backExtra`: (Optional) New extra information for the back
   - `tags`: (Optional) New tags for the card
+
+## Usage Examples
+
+### Basic card with text only
+```
+"Create a flashcard in my Spanish deck with 'Hola' on the front and 'Hello' on the back"
+```
+
+### Card with images
+```
+"Create a flashcard about the Eiffel Tower with an image from https://example.com/eiffel.jpg on the front"
+```
+
+### Card with audio
+```
+"Create a pronunciation card with audio from https://example.com/pronunciation.mp3"
+```
+
+### Card with multiple media
+```
+"Create a card with images on both sides and audio on the back for studying animals"
+```
+
+### Cloze card with media
+```
+"Create a cloze card: 'The capital of {{c1::France}} is {{c2::Paris}}' with an image of the Eiffel Tower"
+```
+
+**Note:** Media files are automatically downloaded from URLs and embedded into the cards. Ensure URLs are accessible and point to valid media files.
 
 ## Development
 

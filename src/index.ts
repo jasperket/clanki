@@ -27,6 +27,13 @@ interface AnkiResponse<T> {
   error: string | null;
 }
 
+interface MediaItem {
+  url: string;
+  filename: string;
+  skipHash?: string;
+  fields: string[];
+}
+
 // Validation schemas
 const ListDecksArgumentsSchema = z.object({});
 
@@ -39,6 +46,10 @@ const CreateCardArgumentsSchema = z.object({
   front: z.string(),
   back: z.string(),
   tags: z.array(z.string()).optional(),
+  frontImages: z.array(z.string()).optional(),
+  backImages: z.array(z.string()).optional(),
+  frontAudio: z.array(z.string()).optional(),
+  backAudio: z.array(z.string()).optional(),
 });
 
 const CreateClozeCardArgumentsSchema = z.object({
@@ -46,6 +57,10 @@ const CreateClozeCardArgumentsSchema = z.object({
   text: z.string(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  textImages: z.array(z.string()).optional(),
+  backImages: z.array(z.string()).optional(),
+  textAudio: z.array(z.string()).optional(),
+  backAudio: z.array(z.string()).optional(),
 });
 
 const UpdateCardArgumentsSchema = z.object({
@@ -182,6 +197,40 @@ async function ankiRequest<T>(
   throw new Error(`Failed after ${retries} attempts`);
 }
 
+// Helper function to build media objects for AnkiConnect
+function buildMediaArray(
+  urls: string[] | undefined,
+  fieldName: string,
+  mediaType: "image" | "audio"
+): MediaItem[] {
+  if (!urls || urls.length === 0) return [];
+
+  return urls.map((url, index) => {
+    try {
+      // Extract file extension from URL or use default
+      const urlObj = new URL(url);
+      const pathParts = urlObj.pathname.split('/');
+      const urlFilename = pathParts[pathParts.length - 1];
+
+      // Generate unique filename
+      const timestamp = Date.now();
+      const extension = urlFilename.includes('.')
+        ? urlFilename.split('.').pop()
+        : (mediaType === "image" ? "jpg" : "mp3");
+      const filename = `${mediaType}_${fieldName}_${timestamp}_${index}.${extension}`;
+
+      return {
+        url,
+        filename,
+        fields: [fieldName],
+      };
+    } catch (error) {
+      console.error(`Invalid URL skipped: ${url}`, error);
+      return null;
+    }
+  }).filter((item): item is MediaItem => item !== null);
+}
+
 async function main() {
   // Create server instance
   const server = new Server(
@@ -218,7 +267,7 @@ async function main() {
 
         {
           name: "create-card",
-          description: "Create a new flashcard in a specified deck",
+          description: "Create a new flashcard in a specified deck. Supports HTML formatting in text fields. You can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded in the card.",
           inputSchema: {
             type: "object",
             properties: {
@@ -228,16 +277,36 @@ async function main() {
               },
               front: {
                 type: "string",
-                description: "Front side content of the card",
+                description: "Front side content of the card (supports HTML formatting)",
               },
               back: {
                 type: "string",
-                description: "Back side content of the card",
+                description: "Back side content of the card (supports HTML formatting)",
               },
               tags: {
                 type: "array",
                 items: { type: "string" },
                 description: "Optional tags for the card",
+              },
+              frontImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed on the front of the card. Images will be downloaded and attached automatically.",
+              },
+              backImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed on the back of the card. Images will be downloaded and attached automatically.",
+              },
+              frontAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the front of the card. Audio will be downloaded and can be played in Anki.",
+              },
+              backAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the back of the card. Audio will be downloaded and can be played in Anki.",
               },
             },
             required: ["deckName", "front", "back"],
@@ -273,7 +342,7 @@ async function main() {
         {
           name: "create-cloze-card",
           description:
-            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions.",
+            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions (e.g., {{c1::Paris}} is the capital of France). Supports HTML formatting and can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded.",
           inputSchema: {
             type: "object",
             properties: {
@@ -284,17 +353,37 @@ async function main() {
               text: {
                 type: "string",
                 description:
-                  "Text containing cloze deletions using {{c1::text}} syntax",
+                  "Text containing cloze deletions using {{c1::text}} syntax. Supports HTML formatting. Use {{c1::word}}, {{c2::word}}, etc. for multiple deletions.",
               },
               backExtra: {
                 type: "string",
                 description:
-                  "Optional extra information to show on the back of the card",
+                  "Optional extra information to show on the back of the card (supports HTML formatting)",
               },
               tags: {
                 type: "array",
                 items: { type: "string" },
                 description: "Optional tags for the card",
+              },
+              textImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed in the main text field. Images will be downloaded and attached automatically.",
+              },
+              backImages: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of image URLs to embed in the back extra field. Images will be downloaded and attached automatically.",
+              },
+              textAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the main text field. Audio will be downloaded and can be played in Anki.",
+              },
+              backAudio: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional array of audio file URLs to attach to the back extra field. Audio will be downloaded and can be played in Anki.",
               },
             },
             required: ["deckName", "text"],
@@ -359,25 +448,55 @@ async function main() {
           front,
           back,
           tags = [],
+          frontImages = [],
+          backImages = [],
+          frontAudio = [],
+          backAudio = [],
         } = CreateCardArgumentsSchema.parse(args);
 
-        await ankiRequest("addNote", {
+        // Build picture and audio arrays for AnkiConnect
+        const picture = [
+          ...buildMediaArray(frontImages, "Front", "image"),
+          ...buildMediaArray(backImages, "Back", "image"),
+        ];
+
+        const audio = [
+          ...buildMediaArray(frontAudio, "Front", "audio"),
+          ...buildMediaArray(backAudio, "Back", "audio"),
+        ];
+
+        const noteParams: any = {
           note: {
             deckName,
-            modelName: "Basic", // Using the basic note type
+            modelName: "Basic",
             fields: {
               Front: front,
               Back: back,
             },
             tags,
           },
-        });
+        };
+
+        // Only add picture/audio arrays if they have items
+        if (picture.length > 0) {
+          noteParams.note.picture = picture;
+        }
+        if (audio.length > 0) {
+          noteParams.note.audio = audio;
+        }
+
+        await ankiRequest("addNote", noteParams);
+
+        const mediaInfo = [];
+        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
+        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
+        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new card in deck "${deckName}"`,
+              text: `Successfully created new card in deck "${deckName}"${mediaText}`,
             },
           ],
         };
@@ -423,6 +542,10 @@ async function main() {
           text,
           backExtra = "",
           tags = [],
+          textImages = [],
+          backImages = [],
+          textAudio = [],
+          backAudio = [],
         } = CreateClozeCardArgumentsSchema.parse(args);
 
         // Validate that the text contains at least one cloze deletion
@@ -432,23 +555,49 @@ async function main() {
           );
         }
 
-        await ankiRequest("addNote", {
+        // Build picture and audio arrays for AnkiConnect
+        const picture = [
+          ...buildMediaArray(textImages, "Text", "image"),
+          ...buildMediaArray(backImages, "Back Extra", "image"),
+        ];
+
+        const audio = [
+          ...buildMediaArray(textAudio, "Text", "audio"),
+          ...buildMediaArray(backAudio, "Back Extra", "audio"),
+        ];
+
+        const noteParams: any = {
           note: {
             deckName,
-            modelName: "Cloze", // Using the cloze note type
+            modelName: "Cloze",
             fields: {
               Text: text,
-              Back: backExtra,
+              "Back Extra": backExtra,
             },
             tags,
           },
-        });
+        };
+
+        // Only add picture/audio arrays if they have items
+        if (picture.length > 0) {
+          noteParams.note.picture = picture;
+        }
+        if (audio.length > 0) {
+          noteParams.note.audio = audio;
+        }
+
+        await ankiRequest("addNote", noteParams);
+
+        const mediaInfo = [];
+        if (picture.length > 0) mediaInfo.push(`${picture.length} image(s)`);
+        if (audio.length > 0) mediaInfo.push(`${audio.length} audio file(s)`);
+        const mediaText = mediaInfo.length > 0 ? ` with ${mediaInfo.join(" and ")}` : "";
 
         return {
           content: [
             {
               type: "text",
-              text: `Successfully created new cloze card in deck "${deckName}"`,
+              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}`,
             },
           ],
         };
