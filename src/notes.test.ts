@@ -8,7 +8,10 @@ import {
   buildBulkSummary,
   buildClozeNote,
   buildNoteUpdate,
+  buildSearchSummary,
   partitionAddable,
+  summarizeNote,
+  truncateSummary,
   validateClozeText,
 } from "./notes.js";
 
@@ -401,5 +404,204 @@ describe("note updates", () => {
       Text: "{{c1::x}}",
       "Back Extra": "extra",
     });
+  });
+});
+
+describe("note summaries", () => {
+  // The regression that cost real user data, in read form. Anki's Cloze Note
+  // Type has no "Back" field — its fields are Text and Back Extra — so reading
+  // `fields.Back` returns nothing and the extra content silently vanishes from
+  // the output. Written twice before (see "field names" above) and a third time
+  // in the find-cards handler proposed by PR #7.
+  it("projects cloze Text and Back Extra, not Back", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Cloze",
+      fields: {
+        Text: { value: "The capital is {{c1::Paris}}" },
+        "Back Extra": { value: "extra" },
+      },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("The capital is {{c1::Paris}}");
+    expect(summary.back).toBe("extra");
+  });
+
+  // An empty Back Extra is the ordinary case for a Cloze Note, not a missing
+  // field, so it reads as a cloze marker rather than an error placeholder.
+  it("labels a cloze note with no extra content", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Cloze",
+      fields: { Text: { value: "{{c1::x}}" }, "Back Extra": { value: "" } },
+      tags: [],
+    });
+
+    expect(summary.back).toBe("[Cloze deletion]");
+  });
+
+  // Anki lets users rename a Note Type's fields, so a Note whose type is
+  // "Basic" is not guaranteed to carry Front/Back. Before the optional
+  // chaining, one renamed field threw inside the caller's .map() and failed the
+  // entire deck read rather than the single note.
+  it("does not throw on a Basic note with renamed fields", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Question: { value: "q" }, Answer: { value: "a" } },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("[Missing field]");
+    expect(summary.back).toBe("[Missing field]");
+  });
+
+  // A custom Note Type still has to stay addressable: the caller cannot read
+  // its fields, but it must still be able to find the note to edit or delete
+  // it, which needs the id.
+  it("keeps the note id for an unknown note type", () => {
+    const summary = summarizeNote({
+      noteId: 99,
+      modelName: "My Custom Type",
+      fields: { Whatever: { value: "x" } },
+      tags: ["t"],
+    });
+
+    expect(summary.noteId).toBe(99);
+    expect(summary.noteType).toBe("My Custom Type");
+    expect(summary.tags).toEqual(["t"]);
+    expect(summary.front).toBe("[Unknown note type]");
+  });
+
+  // `modelName` is the AnkiConnect wire spelling and stops at this boundary;
+  // our own shape says noteType (CONTEXT.md, "Note Type"). PR #7 returned the
+  // wire key straight to callers.
+  it("exposes the note type as noteType, not modelName", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+      tags: [],
+    });
+
+    expect(summary.noteType).toBe("Basic");
+    expect("modelName" in summary).toBe(false);
+  });
+
+  it("defaults missing tags to an empty list", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+    });
+
+    expect(summary.tags).toEqual([]);
+  });
+});
+
+describe("search excerpts", () => {
+  const basic = (front: string, back = "b") =>
+    summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: front }, Back: { value: back } },
+      tags: [],
+    });
+
+  // Field values hold HTML. Left raw, one styled note can bury its own text in
+  // markup and spend the whole excerpt on a span tag.
+  it("strips html before measuring the excerpt", () => {
+    const summary = truncateSummary(basic("<b>bold</b> and <i>italic</i>"), 100);
+
+    expect(summary.front).toBe("bold and italic");
+  });
+
+  it("decodes entities without re-forming them from a literal ampersand", () => {
+    const summary = truncateSummary(basic("a &amp;lt; b"), 100);
+
+    // &amp;lt; is a literal "&lt;" in the note, not a less-than sign.
+    expect(summary.front).toBe("a &lt; b");
+  });
+
+  it("truncates content longer than the limit and marks it", () => {
+    const summary = truncateSummary(basic("x".repeat(150)), 100);
+
+    expect(summary.front).toBe(`${"x".repeat(100)}…`);
+  });
+
+  // Off-by-one guard: content exactly at the limit is complete, so marking it
+  // as truncated would be a lie.
+  it("leaves content exactly at the limit alone", () => {
+    const summary = truncateSummary(basic("x".repeat(100)), 100);
+
+    expect(summary.front).toBe("x".repeat(100));
+  });
+
+  // Placeholders come from summarizeNote, not the collection. Truncating one
+  // into "[Missing fie…" would read as real note content.
+  it("leaves placeholders intact", () => {
+    const summary = truncateSummary(
+      summarizeNote({ noteId: 1, modelName: "Weird", fields: {}, tags: [] }),
+      100
+    );
+
+    expect(summary.front).toBe("[Unknown note type]");
+  });
+
+  // Truncation belongs to the search path only; the deck resource returns note
+  // content in full, so it must never be folded into summarizeNote.
+  it("does not truncate inside summarizeNote", () => {
+    expect(basic("x".repeat(150)).front).toBe("x".repeat(150));
+  });
+});
+
+describe("search summary", () => {
+  const note = (noteId: number) =>
+    summarizeNote({
+      noteId,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+      tags: [],
+    });
+
+  // Counts say Notes. One Cloze Note generates one Card per deletion, so a
+  // count of matches is never a count of Cards (ADR 0002). PR #7 reported
+  // "card(s)" while counting notes.
+  it("counts notes, not cards", () => {
+    const message = buildSearchSummary({ matched: 3, shown: [note(1)] });
+
+    expect(message).toContain("3 notes");
+    expect(message).not.toContain("card");
+  });
+
+  it("uses the singular for one match", () => {
+    expect(buildSearchSummary({ matched: 1, shown: [note(1)] })).toContain(
+      "Found 1 note."
+    );
+  });
+
+  // A capped result set must say so and report the true total, or the model
+  // reads 50 of 4,000 matches as the whole answer and acts on it.
+  it("reports the true total when results are capped", () => {
+    const message = buildSearchSummary({
+      matched: 4182,
+      shown: [note(1), note(2)],
+    });
+
+    expect(message).toContain("4182");
+    expect(message).toContain("showing the first 2");
+  });
+
+  it("does not claim a cap when everything is shown", () => {
+    const message = buildSearchSummary({ matched: 2, shown: [note(1), note(2)] });
+
+    expect(message).not.toContain("showing the first");
+  });
+
+  it("reports an empty search without echoing note content", () => {
+    expect(buildSearchSummary({ matched: 0, shown: [] })).toBe(
+      "No notes matched that search."
+    );
   });
 });

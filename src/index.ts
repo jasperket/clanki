@@ -19,12 +19,17 @@ import {
   BASIC_FIELD_FRONT,
   CLOZE_FIELD_BACK_EXTRA,
   CLOZE_FIELD_TEXT,
+  NOTES_INFO_CHUNK_SIZE,
   NewNote,
+  SEARCH_RESULT_LIMIT,
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
   buildNoteUpdate,
+  buildSearchSummary,
   partitionAddable,
+  summarizeNote,
+  truncateSummary,
   validateClozeText,
 } from "./notes.js";
 import * as http from "http";
@@ -44,15 +49,6 @@ const NULL_ON_SUCCESS_ACTIONS = new Set([
 ]);
 
 // Type definitions for Anki responses
-interface AnkiNote {
-  noteId: number;
-  fields: {
-    Front: { value: string };
-    Back: { value: string };
-  };
-  tags: string[];
-}
-
 interface AnkiResponse<T> {
   result: T;
   error: string | null;
@@ -113,6 +109,10 @@ const UpdateClozeCardArgumentsSchema = z.object({
   text: z.string().optional(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
+});
+
+const FindCardsArgumentsSchema = z.object({
+  query: z.string().min(1),
 });
 
 const BulkCreateCardsArgumentsSchema = z.object({
@@ -548,6 +548,22 @@ async function main() {
             required: ["deckName", "cards"],
           },
         },
+        {
+          name: "find-cards",
+          description:
+            "Search for notes using Anki's search syntax and return their note IDs, note type, tags, and a short excerpt of each field. Use this to get the noteId needed by update-card, update-cloze-card or delete-card. Field content is truncated and the number of results is capped, so narrow the query if the note you want is not listed. Examples: 'deck:Spanish', 'tag:vocab', 'front:hello', 'deck:Spanish tag:verbs'.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description:
+                  "Anki search query, e.g. 'deck:Default', 'tag:vocab', or 'deck:Spanish tag:verbs'. See Anki's search documentation for the full syntax.",
+              },
+            },
+            required: ["query"],
+          },
+        },
       ],
     };
   });
@@ -758,6 +774,52 @@ async function main() {
         };
       }
 
+      if (name === "find-cards") {
+        const { query } = FindCardsArgumentsSchema.parse(args);
+
+        const noteIds = await ankiRequest<number[]>("findNotes", { query });
+
+        // The query is the caller's own text, so repeating it is not a fresh
+        // injection channel, and it tells the model which search came back
+        // empty. Note content is never echoed on this path.
+        if (noteIds.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: buildSearchSummary({ matched: 0, shown: [] }),
+              },
+            ],
+          };
+        }
+
+        // Only the capped slice is fetched: notesInfo on every match would
+        // cost a request per chunk for notes that are never shown.
+        const shownIds = noteIds.slice(0, SEARCH_RESULT_LIMIT);
+
+        let allNotes: any[] = [];
+        for (let i = 0; i < shownIds.length; i += NOTES_INFO_CHUNK_SIZE) {
+          const chunk = shownIds.slice(i, i + NOTES_INFO_CHUNK_SIZE);
+          const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+            notes: chunk,
+          });
+          allNotes = allNotes.concat(chunkNotes);
+        }
+
+        const shown = allNotes
+          .map(summarizeNote)
+          .map((note) => truncateSummary(note));
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: buildSearchSummary({ matched: noteIds.length, shown }),
+            },
+          ],
+        };
+      }
+
       if (name === "create-cards-bulk") {
         const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
 
@@ -863,8 +925,7 @@ async function main() {
         };
       }
 
-      // Process notes in chunks of 5
-      const chunkSize = 5;
+      const chunkSize = NOTES_INFO_CHUNK_SIZE;
       let allNotes: any[] = [];
 
       for (let i = 0; i < noteIds.length; i += chunkSize) {
@@ -896,56 +957,21 @@ async function main() {
         );
       }
 
-      // Map AnkiConnect notes to our own note shape
-      const noteInfo: AnkiNote[] = allNotes.map((note) => {
-        if (note.modelName === "Cloze") {
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: note.fields.Text?.value ?? "[Missing field]" },
-              Back: {
-                value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
-              },
-            },
-            tags: note.tags,
-          };
-        } else if (note.modelName === "Basic") {
-          // Anki lets users rename a note type's fields, so a note whose
-          // modelName is "Basic" is not guaranteed to have Front/Back. Without
-          // the optional chaining one renamed field throws inside this .map(),
-          // which fails the whole deck read rather than the single note.
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: note.fields.Front?.value ?? "[Missing field]" },
-              Back: { value: note.fields.Back?.value ?? "[Missing field]" },
-            },
-            tags: note.tags,
-          };
-        } else {
-          // Default case for unknown note types
-          console.error(`Unknown note type: ${note.modelName}`);
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: "[Unknown note type]" },
-              Back: { value: "[Unknown note type]" },
-            },
-            tags: note.tags,
-          };
-        }
-      });
+      // Map AnkiConnect notes to our own note shape. Shared with find-cards so
+      // the two readers cannot drift apart on field names or placeholders.
+      const noteInfo = allNotes.map(summarizeNote);
 
       console.error(`Successfully retrieved info for ${noteInfo.length} notes`);
 
+      // No truncation here: a deck read returns Note content in full, and only
+      // the search path bounds it. See docs/adr/0003.
       const deckContent = noteInfo
-        .map((note) => {
-          return `Note ID: ${note.noteId}\nFront: ${
-            note.fields.Front.value
-          }\nBack: ${note.fields.Back.value}\nTags: ${note.tags.join(
-            ", "
-          )}\n---`;
-        })
+        .map(
+          (note) =>
+            `Note ID: ${note.noteId}\nFront: ${note.front}\nBack: ${note.back}\nTags: ${note.tags.join(
+              ", "
+            )}\n---`
+        )
         .join("\n");
 
       return {
