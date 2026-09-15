@@ -259,3 +259,249 @@ export function buildNoteUpdate(params: {
   if (hasTags) update.tags = tags;
   return update;
 }
+// The display projection of a Note read back from AnkiConnect.
+//
+// `Cloze` Notes have no Front/Back Field — theirs are Text and Back Extra — so
+// the two built-in Note Types are projected onto one shape here and every
+// reader renders them the same way.
+export interface NoteSummary {
+  noteId: number;
+  // Not `modelName`: that spelling belongs to the AnkiConnect wire format and
+  // stops at this boundary (CONTEXT.md, "Note Type").
+  noteType: string;
+  front: string;
+  back: string;
+  tags: string[];
+}
+
+// Placeholders for content that cannot be shown. They are returned in place of
+// a Field value, so a reader always gets a printable string.
+const MISSING_FIELD = "[Missing field]";
+const CLOZE_NO_EXTRA = "[Cloze deletion]";
+const UNKNOWN_NOTE_TYPE = "[Unknown note type]";
+
+// Projects one raw AnkiConnect note onto a NoteSummary.
+//
+// Every read is optional-chained on purpose, the Note itself included: Anki
+// lets users rename a Note Type's Fields, so a Note whose Note Type is "Basic"
+// is not guaranteed to carry Front/Back, and AnkiConnect returns a null entry
+// for a note id it cannot resolve — one deleted between findNotes and
+// notesInfo. Without the guards one bad entry throws inside the caller's .map()
+// and fails the entire read rather than the single Note. An unresolvable Note
+// falls through to the unknown-Note-Type branch below and stays listed.
+export function summarizeNote(note: any): NoteSummary {
+  const base = {
+    noteId: note?.noteId,
+    noteType: note?.modelName,
+    tags: note?.tags ?? [],
+  };
+
+  if (note?.modelName === "Cloze") {
+    return {
+      ...base,
+      front: note.fields?.[CLOZE_FIELD_TEXT]?.value ?? MISSING_FIELD,
+      // `||`, not `??`: a Cloze Note with an empty Back Extra is the normal
+      // case, not a missing Field, and reads better as "[Cloze deletion]".
+      back: note.fields?.[CLOZE_FIELD_BACK_EXTRA]?.value || CLOZE_NO_EXTRA,
+    };
+  }
+
+  if (note?.modelName === "Basic") {
+    return {
+      ...base,
+      front: note.fields?.[BASIC_FIELD_FRONT]?.value ?? MISSING_FIELD,
+      back: note.fields?.[BASIC_FIELD_BACK]?.value ?? MISSING_FIELD,
+    };
+  }
+
+  // A custom Note Type. Its Fields are unknown, but the id and Tags still are
+  // not, so the Note stays addressable — a caller can still find it to edit or
+  // delete it. Logged because a Note rendering as a placeholder is otherwise
+  // hard to explain; stderr is the server's log channel, never tool output.
+  console.error(`Unknown note type: ${note?.modelName}`);
+  return { ...base, front: UNKNOWN_NOTE_TYPE, back: UNKNOWN_NOTE_TYPE };
+}
+
+// How much of a Field `find-cards` shows per Note. Long enough to tell two
+// Notes apart, short enough that a wide search cannot flood the caller.
+export const SEARCH_FIELD_EXCERPT_LENGTH = 100;
+
+// Field values hold HTML, which is noise in a search result and can carry
+// enough markup to bury the text. Tags go, entities that matter come back.
+//
+// The tag pattern requires a letter or `/` after the `<`, so it matches real
+// markup but leaves plain text alone: a Field reading "if a < b then c > d"
+// is content, not a tag, and `<[^>]*>` would delete everything between the
+// two comparison operators.
+//
+// Order is load-bearing. Tags are stripped BEFORE entities are decoded, and
+// nothing re-strips afterwards: a Field holding `&lt;b&gt;` was escaped by
+// Anki because the user wanted to see the literal text `<b>`, so decoding it
+// into markup and then removing it would delete content the user typed.
+function stripHtml(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/?[a-zA-Z][^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    // Last: an unescaped & in the source must not re-form an entity above.
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Cuts to `limit` characters, not UTF-16 code units. A plain `slice` splits a
+// surrogate pair — the two code units JavaScript uses to store one emoji or
+// less common CJK character — leaving a lone half that renders as `<?>`. The
+// spread walks code points, so a cut never lands inside one.
+function excerpt(value: string, limit: number): string {
+  const flat = stripHtml(value);
+  const codePoints = [...flat];
+  if (codePoints.length <= limit) return flat;
+  return `${codePoints.slice(0, limit).join("")}…`;
+}
+
+// Bounds a NoteSummary for display in search results.
+//
+// Deliberately separate from summarizeNote: the deck resource returns Note
+// content in full and must keep doing so, while a search tool is called
+// autonomously and can match an unbounded number of Notes. Only the search
+// path truncates. See docs/adr/0003.
+//
+// Placeholders like "[Missing field]" are produced by summarizeNote rather than
+// read from the collection, and are shorter than any sane limit, so they pass
+// through untouched.
+export function truncateSummary(
+  summary: NoteSummary,
+  limit: number = SEARCH_FIELD_EXCERPT_LENGTH
+): NoteSummary {
+  return {
+    ...summary,
+    front: excerpt(summary.front, limit),
+    back: excerpt(summary.back, limit),
+  };
+}
+
+// notesInfo is a POST body of note ids; chunking keeps a single request from
+// growing unbounded on a large deck. The number is empirical, not a documented
+// AnkiConnect limit — raise it rather than removing the loop.
+export const NOTES_INFO_CHUNK_SIZE = 25;
+
+// How many Notes `find-cards` will show at once. A broad query such as
+// `deck:Default` can match an entire collection, and the result is read into a
+// model's context, so the list is bounded and the true total is reported
+// alongside it.
+export const SEARCH_RESULT_LIMIT = 50;
+
+// Renders search results. Says Notes, not Cards: one Cloze Note generates one
+// Card per deletion, so a count of matches is never a count of Cards (ADR 0002).
+//
+// `capped` is passed in rather than inferred from `shown.length < matched`:
+// those two differ for a second reason that is not a cap. A Note deleted
+// between findNotes and notesInfo, or any id AnkiConnect cannot resolve, is
+// counted in `matched` but produces no entry in `shown`. Inferring the cap
+// there tells the caller to narrow a search that already returned everything
+// that exists. Only the caller knows whether SEARCH_RESULT_LIMIT truncated
+// the id list.
+export function buildSearchSummary(params: {
+  matched: number;
+  shown: NoteSummary[];
+  capped?: boolean;
+}): string {
+  const { matched, shown, capped = false } = params;
+
+  if (matched === 0) return "No notes matched that search.";
+
+  const noteWord = matched === 1 ? "note" : "notes";
+  const header = capped
+    ? `Found ${matched} ${noteWord}; showing the first ${shown.length}. Narrow the search to see different ones.`
+    : `Found ${matched} ${noteWord}.`;
+
+  // The Note content is truncated by truncateSummary before it reaches here.
+  const body = shown
+    .map(
+      (note) =>
+        `Note ID: ${note.noteId}\nNote Type: ${note.noteType}\nFront: ${
+          note.front
+        }\nBack: ${note.back}\nTags: ${
+          note.tags.length > 0 ? note.tags.join(", ") : "(none)"
+        }\n---`
+    )
+    .join("\n");
+
+  return `${header}\n\n${body}`;
+}
+
+// How many Notes one `delete-card` call may remove. Deletion is permanent and
+// AnkiConnect offers no undo, so a single mistaken call is bounded: a caller
+// that built the wrong list of ids cannot empty a collection with it.
+export const DELETE_BATCH_LIMIT = 50;
+
+// Which of the requested Notes actually exist.
+//
+// `deleteNotes` succeeds silently on an id that is not in the collection —
+// `{"result": null, "error": null}`, identical to a real deletion — so counting
+// the ids we asked about would report deletions that never happened. The only
+// way to know is to look first.
+//
+// `notesInfo` answers positionally and returns a bare `{}` for a Note it cannot
+// find, so presence is decided by the id coming back, not by the array length.
+//
+// Repeated ids collapse to one. `deleteNotes` removes a Note once however many
+// times its id appears, so keeping the duplicates would report more deletions
+// than happened — the same lie this partitioning exists to prevent — and would
+// spend DELETE_BATCH_LIMIT slots on Notes that are not distinct.
+export function partitionExistingNotes(params: {
+  requested: number[];
+  found: any[];
+}): { existing: number[]; missing: number[] } {
+  const { found } = params;
+  const requested = [...new Set(params.requested)];
+
+  const foundIds = new Set(
+    found
+      .filter((note) => note && typeof note.noteId === "number")
+      .map((note) => note.noteId)
+  );
+
+  return {
+    existing: requested.filter((id) => foundIds.has(id)),
+    missing: requested.filter((id) => !foundIds.has(id)),
+  };
+}
+
+// Reports a deletion. Says Notes, not Cards: deleting one Cloze Note removes one
+// Card per deletion, so a count of deleted Notes is never a count of Cards
+// (ADR 0002).
+//
+// Ids are the caller's own numbers, not Note content, so naming the missing
+// ones is safe and tells the caller which of its ids were already stale.
+export function buildDeleteSummary(params: {
+  deleted: number[];
+  missing: number[];
+}): string {
+  const { deleted, missing } = params;
+
+  const noteWord = (n: number) => `${n} note${n === 1 ? "" : "s"}`;
+
+  if (deleted.length === 0) {
+    return `Deleted nothing. No notes found with ${
+      missing.length === 1 ? "ID" : "IDs"
+    }: ${missing.join(", ")}.`;
+  }
+
+  const head = `Permanently deleted ${noteWord(deleted.length)}: ${deleted.join(
+    ", "
+  )}.`;
+
+  if (missing.length === 0) return head;
+
+  return `${head} ${noteWord(
+    missing.length
+  )} did not exist and ${missing.length === 1 ? "was" : "were"} skipped: ${missing.join(
+    ", "
+  )}.`;
+}

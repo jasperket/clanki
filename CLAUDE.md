@@ -24,9 +24,11 @@ npm run build   # the MCP server runs build/index.js, so rebuild before testing
 
 Its tools appear as `mcp__clanki__create-card`, `mcp__clanki__create-deck`,
 `mcp__clanki__create-cloze-card`, `mcp__clanki__create-cards-bulk`,
-`mcp__clanki__create-cloze-cards-bulk`, `mcp__clanki__update-card` and
-`mcp__clanki__update-cloze-card`. Decks are exposed as a **resource**
-(`anki://deck/<name>`), not a tool — there is no `list-decks`.
+`mcp__clanki__create-cloze-cards-bulk`, `mcp__clanki__update-card`,
+`mcp__clanki__update-cloze-card`, `mcp__clanki__find-cards` and
+`mcp__clanki__delete-card`. Decks are
+exposed as a **resource** (`anki://deck/<name>`), not a tool — there is no
+`list-decks`.
 
 MCP servers load at session start, so a server installed mid-session is not
 available until the session restarts. To drive it from a running session,

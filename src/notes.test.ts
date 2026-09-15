@@ -7,8 +7,13 @@ import {
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  buildDeleteSummary,
   buildNoteUpdate,
+  buildSearchSummary,
   partitionAddable,
+  partitionExistingNotes,
+  summarizeNote,
+  truncateSummary,
   validateClozeText,
 } from "./notes.js";
 
@@ -401,5 +406,366 @@ describe("note updates", () => {
       Text: "{{c1::x}}",
       "Back Extra": "extra",
     });
+  });
+});
+
+describe("note summaries", () => {
+  // The regression that cost real user data, in read form. Anki's Cloze Note
+  // Type has no "Back" field — its fields are Text and Back Extra — so reading
+  // `fields.Back` returns nothing and the extra content silently vanishes from
+  // the output. Written twice before (see "field names" above) and a third time
+  // in the find-cards handler proposed by PR #7.
+  it("projects cloze Text and Back Extra, not Back", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Cloze",
+      fields: {
+        Text: { value: "The capital is {{c1::Paris}}" },
+        "Back Extra": { value: "extra" },
+      },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("The capital is {{c1::Paris}}");
+    expect(summary.back).toBe("extra");
+  });
+
+  // An empty Back Extra is the ordinary case for a Cloze Note, not a missing
+  // field, so it reads as a cloze marker rather than an error placeholder.
+  it("labels a cloze note with no extra content", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Cloze",
+      fields: { Text: { value: "{{c1::x}}" }, "Back Extra": { value: "" } },
+      tags: [],
+    });
+
+    expect(summary.back).toBe("[Cloze deletion]");
+  });
+
+  // Anki lets users rename a Note Type's fields, so a Note whose type is
+  // "Basic" is not guaranteed to carry Front/Back. Before the optional
+  // chaining, one renamed field threw inside the caller's .map() and failed the
+  // entire deck read rather than the single note.
+  it("does not throw on a Basic note with renamed fields", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Question: { value: "q" }, Answer: { value: "a" } },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("[Missing field]");
+    expect(summary.back).toBe("[Missing field]");
+  });
+
+  // A custom Note Type still has to stay addressable: the caller cannot read
+  // its fields, but it must still be able to find the note to edit or delete
+  // it, which needs the id.
+  it("keeps the note id for an unknown note type", () => {
+    const summary = summarizeNote({
+      noteId: 99,
+      modelName: "My Custom Type",
+      fields: { Whatever: { value: "x" } },
+      tags: ["t"],
+    });
+
+    expect(summary.noteId).toBe(99);
+    expect(summary.noteType).toBe("My Custom Type");
+    expect(summary.tags).toEqual(["t"]);
+    expect(summary.front).toBe("[Unknown note type]");
+  });
+
+  // `modelName` is the AnkiConnect wire spelling and stops at this boundary;
+  // our own shape says noteType (CONTEXT.md, "Note Type"). PR #7 returned the
+  // wire key straight to callers.
+  it("exposes the note type as noteType, not modelName", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+      tags: [],
+    });
+
+    expect(summary.noteType).toBe("Basic");
+    expect("modelName" in summary).toBe(false);
+  });
+
+  // AnkiConnect returns a null entry for an id it cannot resolve — a Note
+  // deleted between findNotes and notesInfo. Unguarded, that one entry threw
+  // inside the caller's .map() and failed the whole search or deck read.
+  it("does not throw on a null note entry", () => {
+    const summary = summarizeNote(null);
+
+    expect(summary.front).toBe("[Unknown note type]");
+    expect(summary.tags).toEqual([]);
+  });
+
+  it("defaults missing tags to an empty list", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+    });
+
+    expect(summary.tags).toEqual([]);
+  });
+});
+
+describe("search excerpts", () => {
+  const basic = (front: string, back = "b") =>
+    summarizeNote({
+      noteId: 1,
+      modelName: "Basic",
+      fields: { Front: { value: front }, Back: { value: back } },
+      tags: [],
+    });
+
+  // Field values hold HTML. Left raw, one styled note can bury its own text in
+  // markup and spend the whole excerpt on a span tag.
+  it("strips html before measuring the excerpt", () => {
+    const summary = truncateSummary(basic("<b>bold</b> and <i>italic</i>"), 100);
+
+    expect(summary.front).toBe("bold and italic");
+  });
+
+  // `<[^>]*>` cannot tell `<b>` from a less-than sign: it deleted everything
+  // between the two comparison operators, so a Field of real content came back
+  // mangled and the caller could not tell which Note it had matched.
+  it("leaves plain-text angle brackets alone", () => {
+    const summary = truncateSummary(basic("if a < b then c > d is true"), 100);
+
+    expect(summary.front).toBe("if a < b then c > d is true");
+  });
+
+  // Anki escaped these because the user wanted to see the literal text `<b>`.
+  // Decoding runs after the tag strip and nothing re-strips, so the content
+  // survives instead of being removed as if it were markup.
+  it("keeps escaped markup as visible text", () => {
+    const summary = truncateSummary(
+      basic("&lt;b&gt;not bold&lt;/b&gt;"),
+      100
+    );
+
+    expect(summary.front).toBe("<b>not bold</b>");
+  });
+
+  it("decodes entities without re-forming them from a literal ampersand", () => {
+    const summary = truncateSummary(basic("a &amp;lt; b"), 100);
+
+    // &amp;lt; is a literal "&lt;" in the note, not a less-than sign.
+    expect(summary.front).toBe("a &lt; b");
+  });
+
+  it("truncates content longer than the limit and marks it", () => {
+    const summary = truncateSummary(basic("x".repeat(150)), 100);
+
+    expect(summary.front).toBe(`${"x".repeat(100)}…`);
+  });
+
+  // An emoji is two UTF-16 code units, so a plain slice at an odd offset cuts
+  // one in half and emits a lone surrogate that renders as a replacement
+  // character. Counting code points keeps the cut between characters.
+  it("does not split a surrogate pair when truncating", () => {
+    const summary = truncateSummary(basic("😀".repeat(60)), 51);
+
+    expect(summary.front).toBe(`${"😀".repeat(51)}…`);
+    expect(summary.front).not.toContain("�");
+  });
+
+  // Off-by-one guard: content exactly at the limit is complete, so marking it
+  // as truncated would be a lie.
+  it("leaves content exactly at the limit alone", () => {
+    const summary = truncateSummary(basic("x".repeat(100)), 100);
+
+    expect(summary.front).toBe("x".repeat(100));
+  });
+
+  // Placeholders come from summarizeNote, not the collection. Truncating one
+  // into "[Missing fie…" would read as real note content.
+  it("leaves placeholders intact", () => {
+    const summary = truncateSummary(
+      summarizeNote({ noteId: 1, modelName: "Weird", fields: {}, tags: [] }),
+      100
+    );
+
+    expect(summary.front).toBe("[Unknown note type]");
+  });
+
+  // Truncation belongs to the search path only; the deck resource returns note
+  // content in full, so it must never be folded into summarizeNote.
+  it("does not truncate inside summarizeNote", () => {
+    expect(basic("x".repeat(150)).front).toBe("x".repeat(150));
+  });
+});
+
+describe("search summary", () => {
+  const note = (noteId: number) =>
+    summarizeNote({
+      noteId,
+      modelName: "Basic",
+      fields: { Front: { value: "f" }, Back: { value: "b" } },
+      tags: [],
+    });
+
+  // Counts say Notes. One Cloze Note generates one Card per deletion, so a
+  // count of matches is never a count of Cards (ADR 0002). PR #7 reported
+  // "card(s)" while counting notes.
+  it("counts notes, not cards", () => {
+    const message = buildSearchSummary({ matched: 3, shown: [note(1)] });
+
+    expect(message).toContain("3 notes");
+    expect(message).not.toContain("card");
+  });
+
+  it("uses the singular for one match", () => {
+    expect(buildSearchSummary({ matched: 1, shown: [note(1)] })).toContain(
+      "Found 1 note."
+    );
+  });
+
+  // A capped result set must say so and report the true total, or the model
+  // reads 50 of 4,000 matches as the whole answer and acts on it.
+  it("reports the true total when results are capped", () => {
+    const message = buildSearchSummary({
+      matched: 4182,
+      shown: [note(1), note(2)],
+      capped: true,
+    });
+
+    expect(message).toContain("4182");
+    expect(message).toContain("showing the first 2");
+  });
+
+  // A short result set is not a capped one. notesInfo returns nothing for a
+  // Note deleted between findNotes and notesInfo, so `shown` is shorter than
+  // `matched` without the cap having applied — inferring the cap from that
+  // difference tells the caller to narrow a search that already returned
+  // everything that still exists.
+  it("does not claim a cap when a match went missing between calls", () => {
+    const message = buildSearchSummary({
+      matched: 3,
+      shown: [note(1), note(2)],
+    });
+
+    expect(message).not.toContain("showing the first");
+  });
+
+  it("does not claim a cap when everything is shown", () => {
+    const message = buildSearchSummary({ matched: 2, shown: [note(1), note(2)] });
+
+    expect(message).not.toContain("showing the first");
+  });
+
+  it("reports an empty search without echoing note content", () => {
+    expect(buildSearchSummary({ matched: 0, shown: [] })).toBe(
+      "No notes matched that search."
+    );
+  });
+});
+
+describe("deletion", () => {
+  // The reason this partitioning exists at all. AnkiConnect's `deleteNotes`
+  // answers {"result": null, "error": null} whether it removed a Note or was
+  // handed an id that was never in the collection — verified against a live
+  // collection — so a summary built from the requested ids claims deletions
+  // that never happened.
+  it("separates ids that exist from ids that do not", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [1, 2, 3],
+      // notesInfo answers positionally and returns a bare {} for a Note it
+      // cannot find.
+      found: [{ noteId: 1 }, {}, { noteId: 3 }],
+    });
+
+    expect(existing).toEqual([1, 3]);
+    expect(missing).toEqual([2]);
+  });
+
+  it("treats every id as missing when nothing is found", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [7, 8],
+      found: [{}, {}],
+    });
+
+    expect(existing).toEqual([]);
+    expect(missing).toEqual([7, 8]);
+  });
+
+  // Presence is decided by the id coming back, not by the array being the
+  // expected length — a shorter or padded response must not shift the mapping.
+  it("does not infer presence from position alone", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [10, 20],
+      found: [{ noteId: 20 }],
+    });
+
+    expect(existing).toEqual([20]);
+    expect(missing).toEqual([10]);
+  });
+
+  // A repeated id is one Note. Keeping the duplicate would report more
+  // deletions than happened, which is the failure this whole partitioning
+  // exists to prevent, and would spend DELETE_BATCH_LIMIT slots on Notes that
+  // are not distinct.
+  it("collapses repeated ids to one", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [5, 5, 5],
+      found: [{ noteId: 5 }, { noteId: 5 }, { noteId: 5 }],
+    });
+
+    expect(existing).toEqual([5]);
+    expect(missing).toEqual([]);
+  });
+
+  it("collapses repeated ids that do not exist", () => {
+    const { existing, missing } = partitionExistingNotes({
+      requested: [9, 9],
+      found: [{}, {}],
+    });
+
+    expect(existing).toEqual([]);
+    expect(missing).toEqual([9]);
+  });
+
+  // Counts say Notes. Deleting one Cloze Note removes one Card per deletion, so
+  // a count of deleted Notes is never a count of Cards (ADR 0002).
+  it("counts notes, not cards", () => {
+    const message = buildDeleteSummary({ deleted: [1, 2], missing: [] });
+
+    expect(message).toContain("2 notes");
+    expect(message).not.toContain("card");
+  });
+
+  it("uses the singular for one note", () => {
+    expect(buildDeleteSummary({ deleted: [1], missing: [] })).toContain(
+      "1 note:"
+    );
+  });
+
+  // A partly stale request must not read as a clean success: the caller needs
+  // to know which of its ids were already gone.
+  it("names ids that did not exist", () => {
+    const message = buildDeleteSummary({ deleted: [1], missing: [2, 3] });
+
+    expect(message).toContain("Permanently deleted 1 note: 1.");
+    expect(message).toContain("2 notes did not exist");
+    expect(message).toContain("2, 3");
+  });
+
+  // The worst case to get wrong: nothing was deleted, and saying "deleted"
+  // would be a plain lie about a destructive operation.
+  it("does not claim a deletion when nothing existed", () => {
+    const message = buildDeleteSummary({ deleted: [], missing: [9] });
+
+    expect(message).toContain("Deleted nothing");
+    expect(message).not.toContain("Permanently deleted");
+  });
+
+  // A clean run says nothing about skipped notes.
+  it("stays quiet about missing ids when there are none", () => {
+    const message = buildDeleteSummary({ deleted: [1, 2], missing: [] });
+
+    expect(message).not.toContain("did not exist");
   });
 });

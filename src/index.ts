@@ -16,15 +16,23 @@ import {
 import {
   AddabilityReport,
   BASIC_FIELD_BACK,
+  DELETE_BATCH_LIMIT,
   BASIC_FIELD_FRONT,
   CLOZE_FIELD_BACK_EXTRA,
   CLOZE_FIELD_TEXT,
+  NOTES_INFO_CHUNK_SIZE,
   NewNote,
+  SEARCH_RESULT_LIMIT,
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
+  buildDeleteSummary,
   buildNoteUpdate,
+  buildSearchSummary,
   partitionAddable,
+  partitionExistingNotes,
+  summarizeNote,
+  truncateSummary,
   validateClozeText,
 } from "./notes.js";
 import * as http from "http";
@@ -41,18 +49,10 @@ const NULL_ON_SUCCESS_ACTIONS = new Set([
   "updateNoteFields",
   "updateNote",
   "replaceTags",
+  "deleteNotes",
 ]);
 
 // Type definitions for Anki responses
-interface AnkiNote {
-  noteId: number;
-  fields: {
-    Front: { value: string };
-    Back: { value: string };
-  };
-  tags: string[];
-}
-
 interface AnkiResponse<T> {
   result: T;
   error: string | null;
@@ -113,6 +113,22 @@ const UpdateClozeCardArgumentsSchema = z.object({
   text: z.string().optional(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
+});
+
+const FindCardsArgumentsSchema = z.object({
+  query: z.string().min(1),
+});
+
+const DeleteCardsArgumentsSchema = z.object({
+  // Ids only, never a query. Making the caller name what it deletes keeps the
+  // ids in its own context, where a user reading along can see them, instead of
+  // letting a broad search expand server-side into notes nobody looked at. Do
+  // not add a `query` parameter here as a convenience.
+  noteIds: z.array(z.number()).min(1).max(DELETE_BATCH_LIMIT),
+  // A second, deliberate step. It does not make deletion safe on its own — the
+  // same caller supplies it — but it stops a malformed or half-built call from
+  // deleting anything.
+  confirm: z.literal(true),
 });
 
 const BulkCreateCardsArgumentsSchema = z.object({
@@ -548,6 +564,44 @@ async function main() {
             required: ["deckName", "cards"],
           },
         },
+        {
+          name: "find-cards",
+          description:
+            "Search for notes using Anki's search syntax and return their note IDs, note type, tags, and a short excerpt of each field. Use this to get the noteId needed by update-card, update-cloze-card or delete-card. Field content is truncated and the number of results is capped, so narrow the query if the note you want is not listed. Examples: 'deck:Spanish', 'tag:vocab', 'front:hello', 'deck:Spanish tag:verbs'.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description:
+                  "Anki search query, e.g. 'deck:Default', 'tag:vocab', or 'deck:Spanish tag:verbs'. See Anki's search documentation for the full syntax.",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "delete-card",
+          description:
+            "PERMANENTLY deletes notes. This cannot be undone and there is no trash to recover them from — the notes and every card generated from them are gone. Only delete notes the user has asked you to delete. Use find-cards first to obtain the note IDs and to confirm you have the right notes; there is no delete-by-query, and IDs must be listed explicitly. Deleting one cloze note removes every card generated from it.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              noteIds: {
+                type: "array",
+                items: { type: "number" },
+                description: `IDs of the notes to delete permanently, at most ${DELETE_BATCH_LIMIT} per call. Obtain them with find-cards.`,
+              },
+              confirm: {
+                type: "boolean",
+                enum: [true],
+                description:
+                  "Must be true. Acknowledges that this deletion is permanent and was requested by the user.",
+              },
+            },
+            required: ["noteIds", "confirm"],
+          },
+        },
       ],
     };
   });
@@ -758,6 +812,116 @@ async function main() {
         };
       }
 
+      if (name === "find-cards") {
+        const { query } = FindCardsArgumentsSchema.parse(args);
+
+        const noteIds = await ankiRequest<number[]>("findNotes", { query });
+
+        // The query is the caller's own text, so repeating it is not a fresh
+        // injection channel, and it tells the model which search came back
+        // empty. Note content is never echoed on this path.
+        if (noteIds.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: buildSearchSummary({ matched: 0, shown: [] }),
+              },
+            ],
+          };
+        }
+
+        // Only the capped slice is fetched: notesInfo on every match would
+        // cost a request per chunk for notes that are never shown.
+        const shownIds = noteIds.slice(0, SEARCH_RESULT_LIMIT);
+
+        let allNotes: any[] = [];
+        for (let i = 0; i < shownIds.length; i += NOTES_INFO_CHUNK_SIZE) {
+          const chunk = shownIds.slice(i, i + NOTES_INFO_CHUNK_SIZE);
+          const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+            notes: chunk,
+          });
+          allNotes = allNotes.concat(chunkNotes);
+        }
+
+        const shown = allNotes
+          .map(summarizeNote)
+          .map((note) => truncateSummary(note));
+
+        return {
+          content: [
+            {
+              type: "text",
+              // `capped` comes from the id list, not from how many notes came
+              // back: notesInfo can return fewer than asked for a note deleted
+              // since findNotes, which is not a cap and must not read as one.
+              text: buildSearchSummary({
+                matched: noteIds.length,
+                shown,
+                capped: noteIds.length > SEARCH_RESULT_LIMIT,
+              }),
+            },
+          ],
+        };
+      }
+
+      if (name === "delete-card") {
+        const { noteIds } = DeleteCardsArgumentsSchema.parse(args);
+
+        // Look before deleting. `deleteNotes` answers the same
+        // `{result: null, error: null}` whether it removed a Note or was handed
+        // an id that was never in the collection, so reporting what the caller
+        // asked for would claim deletions that did not happen.
+        //
+        // Chunked like every other notesInfo caller here: DELETE_BATCH_LIMIT is
+        // twice NOTES_INFO_CHUNK_SIZE, and a batch of Notes carrying large
+        // fields is exactly the unbounded response that constant bounds.
+        let found: any[] = [];
+        for (let i = 0; i < noteIds.length; i += NOTES_INFO_CHUNK_SIZE) {
+          const chunk = noteIds.slice(i, i + NOTES_INFO_CHUNK_SIZE);
+          const chunkNotes = await ankiRequest<any[]>("notesInfo", {
+            notes: chunk,
+          });
+          found = found.concat(chunkNotes);
+        }
+
+        const { existing, missing } = partitionExistingNotes({
+          requested: noteIds,
+          found,
+        });
+
+        if (existing.length > 0) {
+          try {
+            await ankiRequest("deleteNotes", { notes: existing });
+          } catch (error) {
+            // The ids are the only thing that makes this error actionable: a
+            // bare socket error leaves the caller unable to tell "nothing was
+            // deleted" from "some were". A retry that lands after a successful
+            // first attempt is already safe — deleteNotes is in
+            // NULL_ON_SUCCESS_ACTIONS — so reaching here means the deletion
+            // genuinely failed or its outcome is unknown.
+            const detail =
+              error instanceof Error ? error.message : String(error);
+            throw new Error(
+              `Deletion may not have completed. Attempted to delete ${
+                existing.length
+              } note(s): ${existing.join(
+                ", "
+              )}. Verify in Anki before retrying. Cause: ${detail}`
+            );
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: buildDeleteSummary({ deleted: existing, missing }),
+            },
+          ],
+        };
+      }
+
       if (name === "create-cards-bulk") {
         const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
 
@@ -863,8 +1027,7 @@ async function main() {
         };
       }
 
-      // Process notes in chunks of 5
-      const chunkSize = 5;
+      const chunkSize = NOTES_INFO_CHUNK_SIZE;
       let allNotes: any[] = [];
 
       for (let i = 0; i < noteIds.length; i += chunkSize) {
@@ -896,56 +1059,21 @@ async function main() {
         );
       }
 
-      // Map AnkiConnect notes to our own note shape
-      const noteInfo: AnkiNote[] = allNotes.map((note) => {
-        if (note.modelName === "Cloze") {
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: note.fields.Text?.value ?? "[Missing field]" },
-              Back: {
-                value: note.fields["Back Extra"]?.value || "[Cloze deletion]",
-              },
-            },
-            tags: note.tags,
-          };
-        } else if (note.modelName === "Basic") {
-          // Anki lets users rename a note type's fields, so a note whose
-          // modelName is "Basic" is not guaranteed to have Front/Back. Without
-          // the optional chaining one renamed field throws inside this .map(),
-          // which fails the whole deck read rather than the single note.
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: note.fields.Front?.value ?? "[Missing field]" },
-              Back: { value: note.fields.Back?.value ?? "[Missing field]" },
-            },
-            tags: note.tags,
-          };
-        } else {
-          // Default case for unknown note types
-          console.error(`Unknown note type: ${note.modelName}`);
-          return {
-            noteId: note.noteId,
-            fields: {
-              Front: { value: "[Unknown note type]" },
-              Back: { value: "[Unknown note type]" },
-            },
-            tags: note.tags,
-          };
-        }
-      });
+      // Map AnkiConnect notes to our own note shape. Shared with find-cards so
+      // the two readers cannot drift apart on field names or placeholders.
+      const noteInfo = allNotes.map(summarizeNote);
 
       console.error(`Successfully retrieved info for ${noteInfo.length} notes`);
 
+      // No truncation here: a deck read returns Note content in full, and only
+      // the search path bounds it. See docs/adr/0003.
       const deckContent = noteInfo
-        .map((note) => {
-          return `Note ID: ${note.noteId}\nFront: ${
-            note.fields.Front.value
-          }\nBack: ${note.fields.Back.value}\nTags: ${note.tags.join(
-            ", "
-          )}\n---`;
-        })
+        .map(
+          (note) =>
+            `Note ID: ${note.noteId}\nFront: ${note.front}\nBack: ${note.back}\nTags: ${note.tags.join(
+              ", "
+            )}\n---`
+        )
         .join("\n");
 
       return {

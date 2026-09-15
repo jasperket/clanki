@@ -15,6 +15,8 @@ An MCP server that enables AI assistants like Claude to interact with Anki flash
 - HTML formatting support in card fields
 - Update existing cards and cloze deletions
 - Add and manage tags
+- Search for cards with Anki's query syntax
+- Delete cards permanently
 - View deck contents and card information
 - Full integration with AnkiConnect
 
@@ -148,6 +150,43 @@ Updates an existing cloze deletion card
   - `text`: (Optional) New text with cloze deletions
   - `backExtra`: (Optional) New extra information for the back
   - `tags`: (Optional) New tags for the card
+
+### find-cards
+
+Searches for notes with Anki's query syntax and returns their note IDs, note
+type, tags, and a short excerpt of each field. Use it to obtain the `noteId`
+that `update-card`, `update-cloze-card` and `delete-card` need.
+
+Field content is truncated and the number of results is capped, so narrow the
+query if the note you want is not listed — the reply always reports how many
+notes matched in total.
+
+- Parameters:
+  - `query`: Anki search query, e.g. `deck:Spanish`, `tag:vocab`,
+    `deck:Spanish tag:verbs`
+
+### delete-card
+
+**Permanently deletes notes.** This cannot be undone — there is no trash to
+recover them from, and every card generated from a deleted note goes with it.
+
+Note IDs must be listed explicitly; there is no delete-by-query. Use
+`find-cards` first to obtain them and to check you have the right notes. The
+reply reports which IDs were actually deleted and which did not exist, because
+Anki reports success either way.
+
+- Parameters:
+  - `noteIds`: IDs of the notes to delete, at most 50 per call
+  - `confirm`: Must be `true`
+
+## Resources
+
+Besides the tools above, decks are exposed as a readable resource.
+
+### anki://deck/`<name>`
+
+Reads one deck and returns every note in it — note ID, front, back and tags.
+Unlike `find-cards`, the content is returned in full rather than truncated.
 
 ## Usage Examples
 
