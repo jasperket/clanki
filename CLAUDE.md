@@ -61,9 +61,18 @@ experiment. `npm run probe:tags` replays the Tag experiment behind
 a live collection and exits non-zero if Anki no longer behaves as recorded. Run
 it when upgrading Anki, or when a Tag does something surprising.
 
-It follows the rules above: its own throwaway deck, full cleanup, and it asks
-nothing of the user's real decks. Note its cleanup ends with a collection-wide
-`clearUnusedTags`, which also sweeps unused Tags that were already there.
+`npm run probe:decks` does the same for the Deck name rules in the Deck entry of
+`CONTEXT.md` — that `::` nests with no escape, that an empty path segment becomes
+a deck literally named `blank`, and that an empty or all-whitespace name is not
+refused at all. Run it when upgrading Anki, or when a Deck name does something
+surprising.
 
-Prefer extending that script over writing a new throwaway probe: a finding that
-only lives in a transcript is one nobody can re-check.
+Both follow the rules above: their own throwaway decks, full cleanup, and they
+ask nothing of the user's real decks. Two caveats. The Tag probe's cleanup ends
+with a collection-wide `clearUnusedTags`, which also sweeps unused Tags that were
+already there. The Deck probe creates and deletes a deck named `blank`, because
+that is Anki's own substitution for an empty name — it refuses to run if you
+already have one.
+
+Prefer extending one of those scripts over writing a new throwaway probe: a
+finding that only lives in a transcript is one nobody can re-check.
