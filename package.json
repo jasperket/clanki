@@ -6,7 +6,8 @@
     "build": "tsc",
     "start": "node build/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe:tags": "node scripts/probe-tag-behaviour.mjs"
   },
   "keywords": [],
   "author": "",

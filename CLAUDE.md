@@ -52,3 +52,18 @@ in the collection, query AnkiConnect directly on `http://127.0.0.1:8765`
   `image_*` / `audio_*`), then `deleteNotes`, then `deleteDecks`.
 - Anki writes to a real collection — ask before creating or deleting anything
   the user did not ask you to touch.
+
+## Probing Anki's own behavior
+
+Some of Anki's rules are not documented anywhere and were established by
+experiment. `npm run probe:tags` replays the Tag experiment behind
+[ADR 0005](docs/adr/0005-domain-invariants-live-in-the-domain-layer.md) against
+a live collection and exits non-zero if Anki no longer behaves as recorded. Run
+it when upgrading Anki, or when a Tag does something surprising.
+
+It follows the rules above: its own throwaway deck, full cleanup, and it asks
+nothing of the user's real decks. Note its cleanup ends with a collection-wide
+`clearUnusedTags`, which also sweeps unused Tags that were already there.
+
+Prefer extending that script over writing a new throwaway probe: a finding that
+only lives in a transcript is one nobody can re-check.
