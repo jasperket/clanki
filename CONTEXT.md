@@ -8,7 +8,16 @@ have already caused bugs in this repo.
 ## Language
 
 **Deck**:
-A named collection of Notes. Nested decks are expressed with `::` in the name.
+A named collection of Notes. Nested Decks are expressed with `::` in the name:
+`Biology::Cells` is a Deck named `Cells` inside one named `Biology`, and Anki
+creates the parent if it does not exist. The separator is Anki's and has no
+escape, so a Deck cannot be named literally `Biology::Cells`. An empty path
+segment becomes the literal word `blank` (`::a` is stored as `blank::a`), and
+whitespace around a separator is trimmed (`a :: b` is stored as `a::b`). An
+empty or all-whitespace name is not refused either -- it produces a Deck named
+`blank` -- so `validateDeckName` rejects it before Anki invents one. Unlike a
+Tag, a Deck name may contain a space. The probed behaviour is re-checkable with
+`npm run probe:decks`.
 _Avoid_: collection (in Anki that means the entire database, not one deck)
 
 **Note**:

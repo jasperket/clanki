@@ -30,6 +30,7 @@ import {
   summarizeNote,
   truncateSummary,
   validateClozeText,
+  validateDeckName,
   validateTags,
 } from "./notes.js";
 import { ankiRequest } from "./ankiConnect.js";
@@ -83,7 +84,7 @@ const CreateDeckArgumentsSchema = z.object({
 });
 
 const CreateCardArgumentsSchema = z.object({
-  deckName: z.string(),
+  deckName: z.string().min(1),
   // Anki refuses a Note whose first Field is empty, and in a bulk batch that
   // refusal arrives as an anonymous null. Rejecting it here names the problem
   // instead. `back` stays unconstrained — an empty back is a legitimate Note.
@@ -97,7 +98,7 @@ const CreateCardArgumentsSchema = z.object({
 });
 
 const CreateClozeCardArgumentsSchema = z.object({
-  deckName: z.string(),
+  deckName: z.string().min(1),
   text: z.string(),
   backExtra: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -138,7 +139,7 @@ const DeleteCardsArgumentsSchema = z.object({
 });
 
 const BulkCreateCardsArgumentsSchema = z.object({
-  deckName: z.string(),
+  deckName: z.string().min(1),
   cards: z.array(
     z.object({
       front: z.string().min(1),
@@ -149,7 +150,7 @@ const BulkCreateCardsArgumentsSchema = z.object({
 });
 
 const BulkCreateClozeCardsArgumentsSchema = z.object({
-  deckName: z.string(),
+  deckName: z.string().min(1),
   cards: z.array(
     z.object({
       text: z.string().min(1),
@@ -213,7 +214,8 @@ async function main() {
             properties: {
               name: {
                 type: "string",
-                description: "Name for the new deck",
+                description:
+                  "Name for the new deck. A `::` in the name creates a nested deck - `Biology::Cells` is a deck named Cells inside a deck named Biology and Anki creates the parent if it does not exist. There is no way to name a single deck literally `Biology::Cells`.",
               },
             },
             required: ["name"],
@@ -228,7 +230,8 @@ async function main() {
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the note to",
+                description:
+                  "Name of the deck to add the note to. The deck must already exist - use create-deck first if it does not. A `::` in the name means a nested deck: `Biology::Cells` is a deck named Cells inside a deck named Biology. There is no way to name a single deck literally `Biology::Cells`.",
               },
               front: {
                 type: "string",
@@ -305,7 +308,8 @@ async function main() {
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the note to",
+                description:
+                  "Name of the deck to add the note to. The deck must already exist - use create-deck first if it does not. A `::` in the name means a nested deck: `Biology::Cells` is a deck named Cells inside a deck named Biology. There is no way to name a single deck literally `Biology::Cells`.",
               },
               text: {
                 type: "string",
@@ -386,7 +390,8 @@ async function main() {
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the notes to",
+                description:
+                  "Name of the deck to add the notes to. The deck must already exist - use create-deck first if it does not. A `::` in the name means a nested deck: `Biology::Cells` is a deck named Cells inside a deck named Biology. There is no way to name a single deck literally `Biology::Cells`.",
               },
               cards: {
                 type: "array",
@@ -425,7 +430,8 @@ async function main() {
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the notes to",
+                description:
+                  "Name of the deck to add the notes to. The deck must already exist - use create-deck first if it does not. A `::` in the name means a nested deck: `Biology::Cells` is a deck named Cells inside a deck named Biology. There is no way to name a single deck literally `Biology::Cells`.",
               },
               cards: {
                 type: "array",
@@ -506,6 +512,9 @@ async function main() {
     try {
       if (name === "create-deck") {
         const { name: deckName } = CreateDeckArgumentsSchema.parse(args);
+
+        validateDeckName(deckName);
+
         await ankiRequest("createDeck", {
           deck: deckName,
         });
@@ -531,6 +540,7 @@ async function main() {
           backAudio = [],
         } = CreateCardArgumentsSchema.parse(args);
 
+        validateDeckName(deckName);
         validateTags(tags);
 
         const { basic } = await resolveNoteTypes();
@@ -626,6 +636,7 @@ async function main() {
           backAudio = [],
         } = CreateClozeCardArgumentsSchema.parse(args);
 
+        validateDeckName(deckName);
         validateClozeText(text);
         validateTags(tags);
 
@@ -842,6 +853,7 @@ async function main() {
 
         // Validate the whole batch before sending anything, so a malformed
         // entry fails the call rather than leaving a partial batch in the deck.
+        validateDeckName(deckName);
         cards.forEach((card, index) => validateTags(card.tags, index + 1));
 
         const { basic } = await resolveNoteTypes();
@@ -869,6 +881,7 @@ async function main() {
 
         // Validate the whole batch before sending anything, so a malformed
         // entry fails the call rather than leaving a partial batch in the deck.
+        validateDeckName(deckName);
         cards.forEach((card, index) => {
           validateClozeText(card.text, index + 1);
           validateTags(card.tags, index + 1);
@@ -918,8 +931,18 @@ async function main() {
         })),
       };
     } catch (error) {
+      // Discovery degrades to "no decks right now" instead of failing. A user
+      // who opens their MCP client before launching Anki asks what resources
+      // exist and would otherwise get a JSON-RPC -32603, which clients read as
+      // "this server is broken" rather than "Anki is not running yet".
+      //
+      // The cost is deliberate and load-bearing: a genuine deckNames bug is now
+      // invisible to the client and survives only in this log line, so do not
+      // remove it. Every path that does real work still throws -- ReadResource
+      // below, and every tool -- so an actual operation with Anki closed still
+      // reports a clear error.
       console.error("Error listing resources:", error);
-      throw error;
+      return { resources: [] };
     }
   });
 

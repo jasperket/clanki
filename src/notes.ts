@@ -245,6 +245,38 @@ export function validateTags(
   }
 }
 
+// Throws when a Deck name is empty or would become empty once Anki trims it.
+//
+// Anki does not reject an empty Deck name. `createDeck` with "" returns
+// error: null and creates a Deck literally named `blank`, and "   " produces
+// the same Deck -- observed, and re-checkable with `npm run probe:decks`. So
+// without this the caller gets a success message for Notes that were filed
+// somewhere it never asked for, which is worse than a failure.
+//
+// This is meaning rather than shape, hence notes.ts and not a Zod .refine()
+// (docs/adr/0005): it took an experiment to learn that Anki substitutes
+// `blank`, and the schemas' .min(1) cannot see that "   " is empty.
+//
+// Naming `blank` in the message is the point. A caller told only "must not be
+// empty" does not know a Deck was about to be invented on its behalf.
+//
+// No `position` parameter: deckName is per-call, never per-Note, so there is no
+// batch entry to name the way validateTags and validateClozeText do.
+//
+// Only emptiness is rejected. A Deck name may contain a space, a quote or a
+// colon -- all probed and stored unchanged -- so the Tag rules deliberately do
+// NOT apply here. `::` expresses nesting and is a documented feature, not input
+// to constrain.
+//
+// The message contains no comma, for the reason given on validateTags.
+export function validateDeckName(deckName: string): void {
+  if (deckName.trim().length > 0) return;
+
+  throw new Error(
+    "Deck name must not be empty - Anki would file this into a deck named blank"
+  );
+}
+
 // One entry of a `canAddNotesWithErrorDetail` result.
 export interface AddabilityReport {
   canAdd: boolean;

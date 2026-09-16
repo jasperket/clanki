@@ -11,6 +11,7 @@ import {
   summarizeNote,
   truncateSummary,
   validateClozeText,
+  validateDeckName,
   validateTags,
 } from "./notes.js";
 import type { BasicFill, ClozeFill } from "./noteTypes.js";
@@ -300,6 +301,64 @@ describe("tag validation", () => {
       expect.unreachable("expected a throw");
     } catch (error) {
       expect((error as Error).message).not.toMatch(/Card/);
+    }
+  });
+});
+
+describe("deck name validation", () => {
+  // Anki does not reject an empty Deck name. createDeck("") returns
+  // error: null and creates a Deck literally named `blank`, so without this
+  // the caller gets a success message for Notes filed somewhere it never
+  // asked for. Re-checkable with `npm run probe:decks`.
+  it("rejects an empty deck name", () => {
+    expect(() => validateDeckName("")).toThrow(/must not be empty/);
+  });
+
+  // The case .min(1) in the schema cannot see. "   " produces the same `blank`
+  // Deck as "" -- same deck id, observed -- which is why this validator exists
+  // rather than the schema constraint alone.
+  it("rejects a deck name that is only whitespace", () => {
+    expect(() => validateDeckName("   ")).toThrow(/must not be empty/);
+    expect(() => validateDeckName("\t\n")).toThrow(/must not be empty/);
+  });
+
+  // Naming `blank` tells the caller what would otherwise have happened
+  // silently. Without it, "must not be empty" leaves it unaware that a Deck
+  // was about to be invented on its behalf.
+  it("names the deck Anki would have invented", () => {
+    try {
+      validateDeckName("");
+      expect.unreachable("expected a throw");
+    } catch (error) {
+      expect((error as Error).message).toContain("blank");
+    }
+  });
+
+  // `::` is Anki's only spelling for nesting and there is no escape for it, so
+  // refusing it would refuse a documented feature. ADR 0005 reached the same
+  // conclusion for Tags.
+  it("accepts a nested deck name", () => {
+    expect(() => validateDeckName("Biology::Cells")).not.toThrow();
+  });
+
+  // The tripwire against someone generalising TAG_SPLITTING_CHARS onto Decks.
+  // A Deck name may contain a space, a quote, a star and a single colon -- all
+  // probed and stored unchanged -- even though a Tag may not.
+  it("accepts a deck name containing characters a Tag may not", () => {
+    expect(() => validateDeckName("Spanish Verbs")).not.toThrow();
+    expect(() => validateDeckName('quote"deck')).not.toThrow();
+    expect(() => validateDeckName("star*deck")).not.toThrow();
+    expect(() => validateDeckName("colon:deck")).not.toThrow();
+  });
+
+  // src/index.ts joins multiple validation failures with ", ", so a comma
+  // inside one message is indistinguishable from the boundary between two.
+  it("produces a message containing no comma", () => {
+    try {
+      validateDeckName("");
+      expect.unreachable("expected a throw");
+    } catch (error) {
+      expect((error as Error).message).not.toContain(",");
     }
   });
 });
