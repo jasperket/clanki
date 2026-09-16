@@ -52,25 +52,39 @@ const ENGLISH: AnkiNoteType[] = [
   ], ["{{#Header}}<div>{{Header}}</div>{{/Header}}"]),
 ];
 
-// The same collection as Anki creates it in German. Names translated; structure
-// identical, which is the entire premise of resolving by structure.
+// A stock German collection, transcribed from a live AnkiConnect v6 response
+// against a real Anki profile created with the language set to Deutsch. Names
+// translated; structure identical to the English one, which is the entire
+// premise of resolving by structure.
+//
+// Two details here were guessed wrong before checking against real Anki, and
+// both matter: the cloze note type's second field is "Rückseite Extra" (not
+// "Extra"), and image occlusion is called "Bildverdeckung" and carries five
+// fields, so the field-count filter is what keeps it out of the cloze role.
 const GERMAN: AnkiNoteType[] = [
   noteType("Einfach", 0, ["Vorderseite", "Rückseite"], ["{{Vorderseite}}"]),
-  noteType("Einfach (und umgekehrte Karte)", 0, ["Vorderseite", "Rückseite"], [
-    "{{Vorderseite}}",
-    "{{Rückseite}}",
-  ]),
-  noteType("Einfach (Antwort eingeben)", 0, ["Vorderseite", "Rückseite"], [
+  noteType("Einfach (Antwort eintippen)", 0, ["Vorderseite", "Rückseite"], [
     "{{Vorderseite}}\n\n{{type:Rückseite}}",
   ]),
-  noteType("Lückentext", 1, ["Text", "Extra"], ["{{cloze:Text}}"]),
-  noteType("Bild-Okklusion", 1, [
-    "Okklusion",
-    "Bild",
-    "Kopfzeile",
-    "Extra",
-    "Kommentare",
-  ], ["{{#Kopfzeile}}<div>{{Kopfzeile}}</div>{{/Kopfzeile}}"]),
+  noteType(
+    "Einfach (und die umgekehrte Richtung)",
+    0,
+    ["Vorderseite", "Rückseite"],
+    ["{{Vorderseite}}", "{{Rückseite}}"]
+  ),
+  noteType(
+    "Einfach (und wahlweise die umgekehrte Richtung)",
+    0,
+    ["Vorderseite", "Rückseite", "Umgekehrte Richtung hinzufügen"],
+    ["{{Vorderseite}}", "{{Rückseite}}"]
+  ),
+  noteType("Lückentext", 1, ["Text", "Rückseite Extra"], ["{{cloze:Text}}"]),
+  noteType(
+    "Bildverdeckung",
+    1,
+    ["Bildverdeckung", "Bild", "Kopfzeile", "Rückseite Extra", "Kommentare"],
+    ["{{#Kopfzeile}}<div>{{Kopfzeile}}</div>{{/Kopfzeile}}"]
+  ),
 ];
 
 describe("fieldsByOrd", () => {
@@ -126,7 +140,7 @@ describe("resolveNoteTypes: German collection (issue #4)", () => {
       cloze: {
         noteTypeName: "Lückentext",
         textField: "Text",
-        backExtraField: "Extra",
+        backExtraField: "Rückseite Extra",
       },
     });
   });
@@ -238,10 +252,10 @@ describe("selectClozeNoteType", () => {
 describe("overrides", () => {
   it("selects the named note type and reads its fields", () => {
     const resolved = resolveNoteTypes(GERMAN, {
-      basicNoteType: "Einfach (Antwort eingeben)",
+      basicNoteType: "Einfach (Antwort eintippen)",
     });
     expect(resolved.basic).toEqual({
-      noteTypeName: "Einfach (Antwort eingeben)",
+      noteTypeName: "Einfach (Antwort eintippen)",
       frontField: "Vorderseite",
       backField: "Rückseite",
     });
