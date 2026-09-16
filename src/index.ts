@@ -918,8 +918,18 @@ async function main() {
         })),
       };
     } catch (error) {
+      // Discovery degrades to "no decks right now" instead of failing. A user
+      // who opens their MCP client before launching Anki asks what resources
+      // exist and would otherwise get a JSON-RPC -32603, which clients read as
+      // "this server is broken" rather than "Anki is not running yet".
+      //
+      // The cost is deliberate and load-bearing: a genuine deckNames bug is now
+      // invisible to the client and survives only in this log line, so do not
+      // remove it. Every path that does real work still throws -- ReadResource
+      // below, and every tool -- so an actual operation with Anki closed still
+      // reports a clear error.
       console.error("Error listing resources:", error);
-      throw error;
+      return { resources: [] };
     }
   });
 
