@@ -66,6 +66,17 @@ npm run build
 
 Replace `/absolute/path/to/clanki` with the actual path to your clanki installation.
 
+3. Verify the server can reach Anki. With Anki running:
+
+```bash
+curl -X POST http://127.0.0.1:8765 -d "{\"action\":\"version\",\"version\":6}"
+```
+
+A working setup replies `{"result": 6, "error": null}`. If it does not, see
+[docs/troubleshooting.md](docs/troubleshooting.md) — connection failures are by
+far the most common problem, and AnkiConnect's default configuration needs no
+changes.
+
 ## Available Tools
 
 ### create-deck
