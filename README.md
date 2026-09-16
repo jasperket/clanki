@@ -8,16 +8,16 @@ An MCP server that enables AI assistants like Claude to interact with Anki flash
 ## Features
 
 - Create and manage Anki decks
-- Create basic flashcards with front/back content
-- Create cloze deletion cards
-- Create many cards at once in a single request
+- Create basic notes with front/back content
+- Create cloze notes
+- Create many notes at once in a single request
 - **Attach images and audio from URLs** - automatically downloaded and embedded
-- HTML formatting support in card fields
-- Update existing cards and cloze deletions
+- HTML formatting support in note fields
+- Update existing notes and cloze deletions
 - Add and manage tags
-- Search for cards with Anki's query syntax
-- Delete cards permanently
-- View deck contents and card information
+- Search for notes with Anki's query syntax
+- Delete notes permanently
+- View deck contents and note information
 - Full integration with AnkiConnect
 
 ## Prerequisites
@@ -97,8 +97,8 @@ and Anki discards it without an error. Name the one you want:
 
 | Variable | What it does |
 | --- | --- |
-| `CLANKI_BASIC_NOTE_TYPE` | Note type for ordinary two-sided cards, e.g. `Einfach` |
-| `CLANKI_CLOZE_NOTE_TYPE` | Note type for cloze deletion cards, e.g. `Lückentext` |
+| `CLANKI_BASIC_NOTE_TYPE` | Note type for ordinary two-sided notes, e.g. `Einfach` |
+| `CLANKI_CLOZE_NOTE_TYPE` | Note type for cloze notes, e.g. `Lückentext` |
 | `CLANKI_BASIC_FIELDS` | Its two fields, front first, e.g. `Vorderseite,Rückseite` |
 | `CLANKI_CLOZE_FIELDS` | Its two fields, text first, e.g. `Text,Extra` |
 
@@ -145,13 +145,13 @@ Creates a new Anki deck
 
 ### create-card
 
-Creates a new basic flashcard in a specified deck. Supports HTML formatting and media attachments.
+Creates a new note in a specified deck. Supports HTML formatting and media attachments.
 
 - Parameters:
-  - `deckName`: Name of the deck to add the card to
-  - `front`: Front side content of the card (supports HTML)
-  - `back`: Back side content of the card (supports HTML)
-  - `tags`: (Optional) Array of tags for the card
+  - `deckName`: Name of the deck to add the note to
+  - `front`: Front side content of the note (supports HTML)
+  - `back`: Back side content of the note (supports HTML)
+  - `tags`: (Optional) Array of tags for the note
   - `frontImages`: (Optional) Array of image URLs for the front
   - `backImages`: (Optional) Array of image URLs for the back
   - `frontAudio`: (Optional) Array of audio URLs for the front
@@ -159,13 +159,13 @@ Creates a new basic flashcard in a specified deck. Supports HTML formatting and 
 
 ### create-cloze-card
 
-Creates a new cloze deletion card in a specified deck. Supports HTML formatting and media attachments.
+Creates a new cloze note in a specified deck. Supports HTML formatting and media attachments.
 
 - Parameters:
-  - `deckName`: Name of the deck to add the card to
+  - `deckName`: Name of the deck to add the note to
   - `text`: Text containing cloze deletions using {{c1::text}} syntax (supports HTML)
   - `backExtra`: (Optional) Extra information to show on the back of the card (supports HTML)
-  - `tags`: (Optional) Array of tags for the card
+  - `tags`: (Optional) Array of tags for the note
   - `textImages`: (Optional) Array of image URLs for the text field
   - `backImages`: (Optional) Array of image URLs for the back extra field
   - `textAudio`: (Optional) Array of audio URLs for the text field
@@ -173,12 +173,12 @@ Creates a new cloze deletion card in a specified deck. Supports HTML formatting 
 
 ### create-cards-bulk
 
-Creates many basic cards in one request. Prefer this over repeated `create-card`
+Creates many basic notes in one request. Prefer this over repeated `create-card`
 calls for a batch: it sends a single request to Anki regardless of size. Does
-not support media — use `create-card` for cards that need images or audio.
+not support media — use `create-card` for notes that need images or audio.
 
 - Parameters:
-  - `deckName`: Name of the deck to add the cards to
+  - `deckName`: Name of the deck to add the notes to
   - `cards`: Array of `{ front, back, tags? }` objects (at least one)
 
 Anki's `addNotes` is all-or-nothing — a single duplicate would otherwise fail
@@ -189,11 +189,11 @@ those.
 
 ### create-cloze-cards-bulk
 
-Creates many cloze deletion cards in one request. Same trade-offs as
+Creates many cloze notes in one request. Same trade-offs as
 `create-cards-bulk`; use `create-cloze-card` when you need media.
 
 - Parameters:
-  - `deckName`: Name of the deck to add the cards to
+  - `deckName`: Name of the deck to add the notes to
   - `cards`: Array of `{ text, backExtra?, tags? }` objects (at least one)
 
 Cloze syntax is validated for the whole batch before anything is sent, so a
@@ -201,23 +201,23 @@ malformed entry fails the call rather than leaving a partial batch in the deck.
 
 ### update-card
 
-Updates an existing basic flashcard
+Updates an existing note
 
 - Parameters:
   - `noteId`: ID of the note to update
   - `front`: (Optional) New front side content
   - `back`: (Optional) New back side content
-  - `tags`: (Optional) New tags for the card
+  - `tags`: (Optional) New tags for the note
 
 ### update-cloze-card
 
-Updates an existing cloze deletion card
+Updates an existing cloze note
 
 - Parameters:
   - `noteId`: ID of the note to update
   - `text`: (Optional) New text with cloze deletions
   - `backExtra`: (Optional) New extra information for the back
-  - `tags`: (Optional) New tags for the card
+  - `tags`: (Optional) New tags for the note
 
 ### find-cards
 
@@ -295,7 +295,7 @@ Unlike `find-cards`, the content is returned in full rather than truncated.
 
 **Note:** Media files are automatically downloaded from URLs and embedded into
 the cards. Ensure URLs are accessible and point to valid media files. A URL that
-cannot be used is reported back in the tool's response; the card is still
+cannot be used is reported back in the tool's response; the note is still
 created without that attachment.
 
 **Media placement:** Attachments are appended to the **end** of the field they

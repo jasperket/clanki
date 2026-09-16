@@ -287,9 +287,21 @@ describe("tag validation", () => {
     expect(message).not.toMatch(/use "a+\.\.\." instead/);
   });
 
-  // 1-based, matching how validateClozeText names Card 3 text.
+  // 1-based, matching how validateClozeText names Note 3 text. Says Note, not
+  // Card: position indexes the caller's list of Notes, and one Cloze Note
+  // generates a Card per deletion, so "Card 3" would name a thing that does not
+  // correspond to entry 3 at all (ADR 0002).
   it("names the batch position when given one", () => {
-    expect(() => validateTags(["a b"], 3)).toThrow(/Card 3 tag/);
+    expect(() => validateTags(["a b"], 3)).toThrow(/Note 3 tag/);
+  });
+
+  it("does not call a Note a Card when naming the position", () => {
+    try {
+      validateTags(["a b"], 3);
+      expect.unreachable("expected a throw");
+    } catch (error) {
+      expect((error as Error).message).not.toMatch(/Card/);
+    }
   });
 });
 
@@ -396,7 +408,19 @@ describe("cloze validation", () => {
   });
 
   it("names the position in a batch so the caller can find the entry", () => {
-    expect(() => validateClozeText("no deletion", 4)).toThrow(/Card 4/);
+    expect(() => validateClozeText("no deletion", 4)).toThrow(/Note 4/);
+  });
+
+  // Says Note, not Card. position indexes the caller's list of Notes, and a
+  // Cloze Note generates a Card per deletion, so a Card number would not line
+  // up with entry 4 at all -- the conflation ADR 0002 exists to prevent.
+  it("does not call a Note a Card when naming the position", () => {
+    try {
+      validateClozeText("no deletion", 4);
+      expect.unreachable("expected a throw");
+    } catch (error) {
+      expect((error as Error).message).not.toMatch(/Card/);
+    }
   });
 
   // The thrown message is returned as tool output, which the model reads as
