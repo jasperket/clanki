@@ -110,16 +110,19 @@ export function buildClozeNote(
 
 // Throws when `text` contains no Cloze Deletion.
 //
-// `position` names which entry failed in a batch, 1-based to match how the
-// caller counted them out. The offending text is deliberately NOT interpolated
-// into the message: this string is returned as tool output, which the model
-// reads as trusted, and Note text routinely originates from an LLM reading an
-// untrusted page — the same injection vector docs/adr/0001 covers for media
-// URLs. An index is actionable and carries no attacker-controlled bytes.
+// `position` names which Note failed in a batch, 1-based to match how the
+// caller counted them out. It says Note rather than Card because it indexes
+// the caller's input list, and one Cloze Note generates a Card per deletion.
+//
+// The offending text is deliberately NOT interpolated into the message: this
+// string is returned as tool output, which the model reads as trusted, and
+// Note text routinely originates from an LLM reading an untrusted page — the
+// same injection vector docs/adr/0001 covers for media URLs. An index is
+// actionable and carries no attacker-controlled bytes.
 export function validateClozeText(text: string, position?: number): void {
   if (CLOZE_DELETION_PATTERN.test(text)) return;
 
-  const subject = position === undefined ? "Text" : `Card ${position} text`;
+  const subject = position === undefined ? "Text" : `Note ${position} text`;
   throw new Error(
     `${subject} must contain at least one cloze deletion using {{c1::text}} syntax`
   );
@@ -200,7 +203,7 @@ export function validateTags(
 ): void {
   if (tags === undefined) return;
 
-  const subject = position === undefined ? "Tag" : `Card ${position} tag`;
+  const subject = position === undefined ? "Tag" : `Note ${position} tag`;
 
   for (const tag of tags) {
     // Anki strips leading and trailing whitespace and drops an all-whitespace

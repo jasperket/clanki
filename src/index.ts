@@ -222,47 +222,47 @@ async function main() {
 
         {
           name: "create-card",
-          description: "Create a new flashcard in a specified deck. Supports HTML formatting in text fields. You can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded in the card.",
+          description: "Create a new note in a specified deck. Supports HTML formatting in text fields. You can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded in the note.",
           inputSchema: {
             type: "object",
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the card to",
+                description: "Name of the deck to add the note to",
               },
               front: {
                 type: "string",
-                description: "Front side content of the card (supports HTML formatting)",
+                description: "Front side content of the note (supports HTML formatting)",
               },
               back: {
                 type: "string",
-                description: "Back side content of the card (supports HTML formatting)",
+                description: "Back side content of the note (supports HTML formatting)",
               },
               tags: {
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                  "Optional tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
               frontImages: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional array of image URLs to embed on the front of the card. Images will be downloaded and attached automatically.",
+                description: "Optional array of image URLs to embed on the front of the note. Images will be downloaded and attached automatically.",
               },
               backImages: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional array of image URLs to embed on the back of the card. Images will be downloaded and attached automatically.",
+                description: "Optional array of image URLs to embed on the back of the note. Images will be downloaded and attached automatically.",
               },
               frontAudio: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional array of audio file URLs to attach to the front of the card. Audio will be downloaded and can be played in Anki.",
+                description: "Optional array of audio file URLs to attach to the front of the note. Audio will be downloaded and can be played in Anki.",
               },
               backAudio: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional array of audio file URLs to attach to the back of the card. Audio will be downloaded and can be played in Anki.",
+                description: "Optional array of audio file URLs to attach to the back of the note. Audio will be downloaded and can be played in Anki.",
               },
             },
             required: ["deckName", "front", "back"],
@@ -270,7 +270,7 @@ async function main() {
         },
         {
           name: "update-card",
-          description: "Update an existing flashcard",
+          description: "Update an existing note",
           inputSchema: {
             type: "object",
             properties: {
@@ -290,7 +290,7 @@ async function main() {
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "New tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                  "New tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
             },
             required: ["noteId"],
@@ -299,13 +299,13 @@ async function main() {
         {
           name: "create-cloze-card",
           description:
-            "Create a new cloze deletion card in a specified deck. Use {{c1::text}} syntax for cloze deletions (e.g., {{c1::Paris}} is the capital of France). Supports HTML formatting and can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded.",
+            "Create a new cloze note in a specified deck. Use {{c1::text}} syntax for cloze deletions (e.g., {{c1::Paris}} is the capital of France). Supports HTML formatting and can attach multiple images and audio files from URLs - they will be automatically downloaded and embedded.",
           inputSchema: {
             type: "object",
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the card to",
+                description: "Name of the deck to add the note to",
               },
               text: {
                 type: "string",
@@ -321,7 +321,7 @@ async function main() {
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                  "Optional tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
               textImages: {
                 type: "array",
@@ -349,7 +349,7 @@ async function main() {
         },
         {
           name: "update-cloze-card",
-          description: "Update an existing cloze deletion card",
+          description: "Update an existing cloze note",
           inputSchema: {
             type: "object",
             properties: {
@@ -371,7 +371,7 @@ async function main() {
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "New tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                  "New tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
             },
             required: ["noteId"],
@@ -380,33 +380,33 @@ async function main() {
         {
           name: "create-cards-bulk",
           description:
-            "Create multiple basic cards in a single call. Use this instead of calling create-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch. Does not support images or audio: use create-card for cards that need media.",
+            "Create multiple basic notes in a single call. Use this instead of calling create-card repeatedly — it sends one request to Anki regardless of how many notes are in the batch. Does not support images or audio: use create-card for notes that need media.",
           inputSchema: {
             type: "object",
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the cards to",
+                description: "Name of the deck to add the notes to",
               },
               cards: {
                 type: "array",
-                description: "Array of cards to create",
+                description: "Array of notes to create",
                 items: {
                   type: "object",
                   properties: {
                     front: {
                       type: "string",
-                      description: "Front side content of the card",
+                      description: "Front side content of the note",
                     },
                     back: {
                       type: "string",
-                      description: "Back side content of the card",
+                      description: "Back side content of the note",
                     },
                     tags: {
                       type: "array",
                       items: { type: "string" },
                       description:
-                        "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                        "Optional tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
                     },
                   },
                   required: ["front", "back"],
@@ -419,17 +419,17 @@ async function main() {
         {
           name: "create-cloze-cards-bulk",
           description:
-            "Create multiple cloze deletion cards in a single call. Use this instead of calling create-cloze-card repeatedly — it sends one request to Anki regardless of how many cards are in the batch. Does not support images or audio: use create-cloze-card for cards that need media.",
+            "Create multiple cloze notes in a single call. Use this instead of calling create-cloze-card repeatedly — it sends one request to Anki regardless of how many notes are in the batch. Does not support images or audio: use create-cloze-card for notes that need media.",
           inputSchema: {
             type: "object",
             properties: {
               deckName: {
                 type: "string",
-                description: "Name of the deck to add the cards to",
+                description: "Name of the deck to add the notes to",
               },
               cards: {
                 type: "array",
-                description: "Array of cloze cards to create",
+                description: "Array of cloze notes to create",
                 items: {
                   type: "object",
                   properties: {
@@ -447,7 +447,7 @@ async function main() {
                       type: "array",
                       items: { type: "string" },
                       description:
-                        "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
+                        "Optional tags for the note. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
                     },
                   },
                   required: ["text"],
@@ -574,7 +574,7 @@ async function main() {
           content: [
             {
               type: "text",
-              text: `Successfully created new card in deck "${deckName}"${mediaText}${skippedText}`,
+              text: `Successfully created new note in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
@@ -669,7 +669,7 @@ async function main() {
           content: [
             {
               type: "text",
-              text: `Successfully created new cloze card in deck "${deckName}"${mediaText}${skippedText}`,
+              text: `Successfully created new cloze note in deck "${deckName}"${mediaText}${skippedText}`,
             },
           ],
         };
