@@ -1,20 +1,20 @@
 import type { MediaItem } from "./media.js";
+import type { BasicFill, ClozeFill } from "./noteTypes.js";
 
-// Anki's built-in Note Types have exact, case-sensitive Field names, and
 // AnkiConnect silently discards a value written to a Field that does not exist
 // — no error, the Note is created, and the content is simply gone. That failure
 // mode has already cost real user data once (see the Known Issue in README.md),
 // because the name was spelled inline at each call site and one of them was
 // wrong.
 //
-// These constants exist so the names are written down once. Do not inline the
-// strings back into callers: a typo there is invisible to TypeScript, because
-// AnkiConnect's `fields` is an open Record<string, string> and every key type-
-// checks.
-export const BASIC_FIELD_FRONT = "Front";
-export const BASIC_FIELD_BACK = "Back";
-export const CLOZE_FIELD_TEXT = "Text";
-export const CLOZE_FIELD_BACK_EXTRA = "Back Extra";
+// Field names used to be constants here. They no longer can be: Anki translates
+// them per collection, so "Front" exists only in an English one (issue #4). They
+// are now runtime data, resolved from the user's collection by noteTypes.ts.
+//
+// That makes the old rule stronger, not weaker. Never build a key of `fields`
+// from anything but a BasicFill or ClozeFill. A literal is invisible to
+// TypeScript — AnkiConnect's `fields` is an open Record<string, string>, so
+// every key type-checks — and in a non-English collection it is silently wrong.
 
 // A Cloze Deletion is `{{c<number>::...}}` (CONTEXT.md). Both halves of this
 // pattern are load-bearing:
@@ -67,14 +67,17 @@ export function buildBasicNote(
     front: string;
     back: string;
     tags?: string[];
+    // Required, never defaulted. A default here is exactly how the English-only
+    // assumption would survive this change.
+    noteType: BasicFill;
   } & NoteMedia
 ): NewNote {
   const note: NewNote = {
     deckName: params.deckName,
-    modelName: "Basic",
+    modelName: params.noteType.noteTypeName,
     fields: {
-      [BASIC_FIELD_FRONT]: params.front,
-      [BASIC_FIELD_BACK]: params.back,
+      [params.noteType.frontField]: params.front,
+      [params.noteType.backField]: params.back,
     },
     tags: params.tags ?? [],
   };
@@ -87,17 +90,18 @@ export function buildClozeNote(
     text: string;
     backExtra?: string;
     tags?: string[];
+    noteType: ClozeFill;
   } & NoteMedia
 ): NewNote {
   const note: NewNote = {
     deckName: params.deckName,
-    modelName: "Cloze",
+    modelName: params.noteType.noteTypeName,
     fields: {
-      [CLOZE_FIELD_TEXT]: params.text,
+      [params.noteType.textField]: params.text,
       // Written even when empty, matching the single-card handler: the Field
       // exists on the Note Type, so sending "" is meaningful rather than a
       // discarded key.
-      [CLOZE_FIELD_BACK_EXTRA]: params.backExtra ?? "",
+      [params.noteType.backExtraField]: params.backExtra ?? "",
     },
     tags: params.tags ?? [],
   };
@@ -282,13 +286,23 @@ const UNKNOWN_NOTE_TYPE = "[Unknown note type]";
 
 // Projects one raw AnkiConnect note onto a NoteSummary.
 //
-// Every read is optional-chained on purpose, the Note itself included: Anki
-// lets users rename a Note Type's Fields, so a Note whose Note Type is "Basic"
-// is not guaranteed to carry Front/Back, and AnkiConnect returns a null entry
-// for a note id it cannot resolve — one deleted between findNotes and
-// notesInfo. Without the guards one bad entry throws inside the caller's .map()
-// and fails the entire read rather than the single Note. An unresolvable Note
-// falls through to the unknown-Note-Type branch below and stays listed.
+// Deliberately does NOT use Resolution, unlike the write path. Two reasons:
+//
+//   1. It already has the truth. The write path must know Field names *before*
+//      it sends them; here `notesInfo` returns each Note's own Fields, with
+//      their real names and values, whatever language they are in.
+//   2. Depending on Resolution would make an ambiguous collection break
+//      `find-cards` too — so a user could not list their Notes to discover
+//      which Note Type name to put in CLANKI_BASIC_NOTE_TYPE. The tool for
+//      diagnosing the problem would fail for the same reason as the problem.
+//
+// This is also why the function stays pure and synchronous.
+//
+// Every read is optional-chained on purpose, the Note itself included:
+// AnkiConnect returns a null entry for a note id it cannot resolve — one
+// deleted between findNotes and notesInfo. Without the guards one bad entry
+// throws inside the caller's .map() and fails the entire read rather than the
+// single Note.
 export function summarizeNote(note: any): NoteSummary {
   const base = {
     noteId: note?.noteId,
@@ -296,30 +310,46 @@ export function summarizeNote(note: any): NoteSummary {
     tags: note?.tags ?? [],
   };
 
-  if (note?.modelName === "Cloze") {
+  // Fields in Anki's own order. `notesInfo` gives each Field an `order`, which
+  // is what makes "the first Field" meaningful without knowing its name — and
+  // the first Field is the front of a Basic Note in any language.
+  const entries = Object.entries(note?.fields ?? {}) as [
+    string,
+    { value?: string; order?: number }
+  ][];
+  if (entries.length === 0) {
+    // No Fields at all: an unresolvable Note. It keeps its id and Tags, so a
+    // caller can still find it to edit or delete it. Logged because a Note
+    // rendering as a placeholder is otherwise hard to explain; stderr is the
+    // server's log channel, never tool output.
+    console.error(`Unknown note type: ${note?.modelName}`);
+    return { ...base, front: UNKNOWN_NOTE_TYPE, back: UNKNOWN_NOTE_TYPE };
+  }
+  const ordered = [...entries].sort(
+    (a, b) => (a[1]?.order ?? 0) - (b[1]?.order ?? 0)
+  );
+
+  // A Cloze Note is identified by its content, not its Note Type name, which is
+  // translated. Weaker than the old name check, but display-only: a wrong guess
+  // formats a summary oddly and loses nothing.
+  const isCloze = ordered.some(([, f]) =>
+    CLOZE_DELETION_PATTERN.test(f?.value ?? "")
+  );
+
+  const front = ordered[0]?.[1]?.value ?? MISSING_FIELD;
+  const back = ordered[1]?.[1]?.value;
+
+  if (isCloze) {
     return {
       ...base,
-      front: note.fields?.[CLOZE_FIELD_TEXT]?.value ?? MISSING_FIELD,
+      front,
       // `||`, not `??`: a Cloze Note with an empty Back Extra is the normal
       // case, not a missing Field, and reads better as "[Cloze deletion]".
-      back: note.fields?.[CLOZE_FIELD_BACK_EXTRA]?.value || CLOZE_NO_EXTRA,
+      back: back || CLOZE_NO_EXTRA,
     };
   }
 
-  if (note?.modelName === "Basic") {
-    return {
-      ...base,
-      front: note.fields?.[BASIC_FIELD_FRONT]?.value ?? MISSING_FIELD,
-      back: note.fields?.[BASIC_FIELD_BACK]?.value ?? MISSING_FIELD,
-    };
-  }
-
-  // A custom Note Type. Its Fields are unknown, but the id and Tags still are
-  // not, so the Note stays addressable — a caller can still find it to edit or
-  // delete it. Logged because a Note rendering as a placeholder is otherwise
-  // hard to explain; stderr is the server's log channel, never tool output.
-  console.error(`Unknown note type: ${note?.modelName}`);
-  return { ...base, front: UNKNOWN_NOTE_TYPE, back: UNKNOWN_NOTE_TYPE };
+  return { ...base, front, back: back ?? MISSING_FIELD };
 }
 
 // How much of a Field `find-cards` shows per Note. Long enough to tell two
