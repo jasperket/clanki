@@ -77,6 +77,63 @@ A working setup replies `{"result": 6, "error": null}`. If it does not, see
 far the most common problem, and AnkiConnect's default configuration needs no
 changes.
 
+## Configuration
+
+Clanki needs no configuration in a normal setup. Every variable below is
+optional.
+
+### Using Anki in a language other than English
+
+Anki translates the names of its built-in note types, and their fields, when a
+collection is created — a German collection has `Einfach` with the fields
+`Vorderseite` and `Rückseite`, not `Basic` with `Front` and `Back`. Clanki finds
+them by their structure rather than their names, so this works with no setup
+whatever language you use.
+
+If your collection contains several note types that look alike, Clanki cannot
+tell which you meant. It stops and lists the candidates rather than guessing,
+because guessing wrong would write your text into a field that does not exist,
+and Anki discards it without an error. Name the one you want:
+
+| Variable | What it does |
+| --- | --- |
+| `CLANKI_BASIC_NOTE_TYPE` | Note type for ordinary two-sided cards, e.g. `Einfach` |
+| `CLANKI_CLOZE_NOTE_TYPE` | Note type for cloze deletion cards, e.g. `Lückentext` |
+| `CLANKI_BASIC_FIELDS` | Its two fields, front first, e.g. `Vorderseite,Rückseite` |
+| `CLANKI_CLOZE_FIELDS` | Its two fields, text first, e.g. `Text,Extra` |
+
+Naming the note type is usually enough — Clanki reads its fields from your
+collection in order. The `_FIELDS` variables are only needed for a note type
+whose fields are not in front-then-back order. Both are checked against your
+collection at startup, so a typo is reported rather than silently losing content.
+
+### Connecting to AnkiConnect elsewhere
+
+| Variable | Default |
+| --- | --- |
+| `CLANKI_ANKI_CONNECT_URL` | `http://127.0.0.1:8765` |
+
+Set this only if you changed AnkiConnect's port or reach Anki on another machine.
+
+Variables go in the `env` block of your MCP server config, alongside `command`
+and `args`:
+
+```json
+{
+  "mcpServers": {
+    "clanki": {
+      "command": "node",
+      "args": ["/path/to/clanki/build/index.js"],
+      "env": {
+        "CLANKI_BASIC_NOTE_TYPE": "Einfach"
+      }
+    }
+  }
+}
+```
+
+Restart the server after changing them.
+
 ## Available Tools
 
 ### create-deck

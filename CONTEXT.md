@@ -23,22 +23,45 @@ _Avoid_: flashcard
 
 **Note Type**:
 The template that determines which Fields a Note has and how its Cards are
-generated. This server only uses the two built-in types, `Basic` and `Cloze`.
+generated. Anki translates the names of its built-in Note Types per collection,
+so this server never assumes one is called `Basic` or `Cloze`.
 _Avoid_: model (the AnkiConnect wire format calls this `modelName`; that name is
 forced on us by the API and should not spread into our own prose or identifiers)
 
+**Note Type Role**:
+One of exactly two jobs this server needs done: `basic` or `cloze`. A Role is
+ours and is never translated. A Role is not a Note Type name — that distinction
+is the whole point, because the Note Type filling a Role differs per collection.
+
+**Fills**:
+The relation between the two. In a German collection, `Einfach` fills the basic
+Role and `Lückentext` fills the cloze Role.
+
+**Resolution**:
+Working out which Note Type fills each Role, by structure rather than by name.
+Yields that Note Type's Field names at the same time, since AnkiConnect returns
+a Note Type's Fields alongside it.
+
+**Ambiguous Collection**:
+A collection offering more than one candidate for a Role. Resolution stops and
+asks the user to name one, rather than guessing — see
+[ADR 0004](./docs/adr/0004-note-types-are-resolved-by-role.md).
+
 **Field**:
-A named slot on a Note. `Basic` has `Front` and `Back`; `Cloze` has `Text` and
-`Back Extra`. Field names are exact and case-sensitive, and AnkiConnect silently
-discards values written to a Field the Note Type does not have.
+A named slot on a Note. Field names come from whichever Note Type fills the Role
+and are read from the collection at runtime, because Anki translates them too:
+the Fields of the basic Role are `Front`/`Back` in English and
+`Vorderseite`/`Rückseite` in German. Field names are exact and case-sensitive,
+and AnkiConnect silently discards values written to a Field the Note Type does
+not have.
 
 **Tag**:
 A label attached to a Note, not to a Card. Tags cannot contain spaces — Anki
 treats a space as a separator between two Tags.
 
 **Cloze Deletion**:
-The `{{c1::...}}` construct inside a `Cloze` Note's `Text` Field. Each distinct
-number generates its own Card.
+The `{{c1::...}}` construct inside the first Field of a Note whose Note Type
+fills the cloze Role. Each distinct number generates its own Card.
 _Avoid_: using this for the Note itself ("a cloze deletion" meaning the whole
 card), or as a display placeholder
 
