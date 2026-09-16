@@ -86,7 +86,23 @@ ever saw clean tokens.
 ## Limits
 
 One Anki version, one profile, one platform, observed behaviour rather than
-documented grammar. Anki could change any of this in a release. The tests in
-`src/notes.test.ts` are what would catch it — in particular the one asserting
-that NBSP and friends are **accepted**, which fails the moment someone widens
-the character sets.
+documented grammar. Anki could change any of this in a release, and the unit
+tests would not notice: they assert our rules, not Anki's.
+
+So the probe is committed as `scripts/probe-tag-behaviour.mjs` and re-runnable:
+
+```
+npm run probe:tags
+```
+
+It replays every codepoint in the table above against a live collection, prints
+observed-versus-expected, and exits non-zero if any row diverges. Run it when
+upgrading Anki or when a Tag behaves unexpectedly. It writes throwaway Notes to
+its own deck and deletes them, including a collection-wide `clearUnusedTags`.
+
+The table in this ADR is the expectation the script checks against, so the two
+must be updated together.
+
+Within this repo, the tests in `src/notes.test.ts` are the tripwire — in
+particular the one asserting that NBSP and friends are **accepted**, which fails
+the moment someone widens the character sets.
