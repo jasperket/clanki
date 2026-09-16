@@ -11,6 +11,7 @@ import {
   summarizeNote,
   truncateSummary,
   validateClozeText,
+  validateTags,
 } from "./notes.js";
 import type { BasicFill, ClozeFill } from "./noteTypes.js";
 
@@ -140,6 +141,154 @@ describe("tags", () => {
       buildBasicNote({ deckName: "d", front: "q", back: "a", noteType: BASIC })
         .tags
     ).toEqual([]);
+  });
+});
+
+describe("tag validation", () => {
+  // Issue #9. Every case here was established by probing a live collection
+  // (docs/adr/0005) rather than from Anki's documentation, which does not
+  // specify the Tag grammar.
+
+  it("accepts a plain tag and an absent list", () => {
+    expect(() => validateTags(["biology"])).not.toThrow();
+    expect(() => validateTags(undefined)).not.toThrow();
+    expect(() => validateTags([])).not.toThrow();
+  });
+
+  // The reproduction from the issue body: two tags in, three tags out.
+  it("rejects a tag containing a space", () => {
+    expect(() => validateTags(["organic chemistry"])).toThrow(
+      /split into two separate tags/
+    );
+  });
+
+  // U+3000 splits exactly like U+0020 and is invisible in a terminal, so a
+  // reader narrowing the set to [" "] would not see what they broke.
+  it("rejects a tag containing an ideographic space", () => {
+    expect(() => validateTags(["organic\u3000chemistry"])).toThrow(
+      /split into two separate tags/
+    );
+  });
+
+  // Tab and newline are DELETED, not split: "aa\tbb" is stored as "aabb". The
+  // message must say so — conflating the two teaches the caller a wrong model.
+  it("rejects tab and newline and says they are removed not split", () => {
+    for (const tag of ["organic\tchemistry", "organic\nchemistry"]) {
+      expect(() => validateTags([tag])).toThrow(/would remove from the tag/);
+    }
+    expect(() => validateTags(["a\u000bb"])).toThrow();
+    expect(() => validateTags(["a\u000cb"])).toThrow();
+    expect(() => validateTags(["a\u000db"])).toThrow();
+  });
+
+  // THE load-bearing test. JS /\s/ matches all of these, but Anki stores them
+  // unchanged — so replacing the explicit sets with /\s/ rejects valid tags.
+  // This fails the moment someone "simplifies" TAG_SPLITTING_CHARS.
+  it("accepts unicode whitespace that Anki stores unchanged", () => {
+    for (const tag of [
+      "organic\u00a0chemistry", // NBSP
+      "organic\u2028chemistry", // line separator
+      "organic\u202fchemistry", // narrow no-break space
+      "organic\u2003chemistry", // em space
+      "organic\u1680chemistry", // ogham space mark
+      "organic\ufeffchemistry", // zero-width no-break space
+    ]) {
+      expect(() => validateTags([tag])).not.toThrow();
+    }
+  });
+
+  // Anki drops, strips and dedupes these without corrupting anything, so
+  // refusing them would fail a call that does no harm.
+  it("accepts input Anki handles cleanly rather than mangling", () => {
+    expect(() => validateTags([""])).not.toThrow();
+    expect(() => validateTags(["   "])).not.toThrow();
+    expect(() => validateTags(["  padded  "])).not.toThrow();
+    expect(() => validateTags(["dup", "dup"])).not.toThrow();
+  });
+
+  // JS trim() strips all Unicode whitespace, which is wider than the set Anki
+  // splits or deletes on. Probed: Anki also strips leading/trailing NBSP and
+  // ideographic space, so trim() matches its behaviour and an edge-positioned
+  // mangling character is genuinely harmless.
+  it("accepts mangling characters at the edges where Anki strips them", () => {
+    for (const tag of [
+      "　organic",
+      "organic　",
+      " organic ",
+      "	organic	",
+    ]) {
+      expect(() => validateTags([tag])).not.toThrow();
+    }
+  });
+
+  it("accepts the documented workarounds and other probed-clean values", () => {
+    for (const tag of [
+      "organic_chemistry",
+      "organic::chemistry",
+      'say"what',
+      "say'what",
+      "Pr\u00fcfung\u6f22\u5b57",
+      "z".repeat(300),
+    ]) {
+      expect(() => validateTags([tag])).not.toThrow();
+    }
+  });
+
+  it("names the offending tag and a deterministic replacement", () => {
+    expect(() => validateTags(["organic chemistry"])).toThrow(
+      /"organic chemistry"/
+    );
+    expect(() => validateTags(["organic chemistry"])).toThrow(
+      /"organic_chemistry"/
+    );
+  });
+
+  // src/index.ts joins multiple validation failures with ", ", so a comma
+  // inside one message is indistinguishable from the boundary between two.
+  it("produces a message containing no comma", () => {
+    try {
+      validateTags(["organic chemistry"]);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as Error).message).not.toContain(",");
+    }
+  });
+
+  // Mirrors the media.ts truncation rule: a crafted value must not bury the
+  // real message, and the offending character is often a newline.
+  it("bounds the echoed tag and strips characters that could forge output", () => {
+    const long = "a".repeat(200) + " b";
+    const message = (() => {
+      try {
+        validateTags([long]);
+        return "";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })();
+    expect(message).toContain("...");
+    expect(message.length).toBeLessThan(200);
+    expect(message).not.toContain("\n");
+  });
+
+  // A truncated suggestion would not be a Tag the caller can send, so past the
+  // display cap the message describes the fix instead of printing one.
+  it("does not offer a truncated suggestion as a replacement", () => {
+    const message = (() => {
+      try {
+        validateTags(["a".repeat(100) + " evil"]);
+        return "";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })();
+    expect(message).toContain("replace it with an underscore");
+    expect(message).not.toMatch(/use "a+\.\.\." instead/);
+  });
+
+  // 1-based, matching how validateClozeText names Card 3 text.
+  it("names the batch position when given one", () => {
+    expect(() => validateTags(["a b"], 3)).toThrow(/Card 3 tag/);
   });
 });
 
@@ -369,20 +518,21 @@ describe("note updates", () => {
   // Tags reach AnkiConnect as the array the caller gave us, not joined into a
   // string as the `replaceTags` path did.
   //
-  // This does NOT fix issue #9. Verified against a live collection: Anki splits
-  // a Tag on its spaces itself, so ["organic chemistry"] is stored as two Tags
-  // even when sent as a single array element through `updateNote` directly.
-  // The join was never the cause. Enforcing the no-spaces rule at the schema
-  // (CONTEXT.md documents it; nothing asserts it) is the actual fix, and is
-  // deliberately left to #9.
+  // This never fixed issue #9 on its own. Verified against a live collection:
+  // Anki splits a Tag on its spaces itself, so ["organic chemistry"] is stored
+  // as two Tags even when sent as a single array element through `updateNote`
+  // directly. The join was never the cause. The actual fix is validateTags,
+  // which now rejects such a Tag before it reaches this builder — which is why
+  // the fixture below uses a valid Tag. The invariant under test here is still
+  // the array, not its contents.
   it("passes tags through as an array, unjoined", () => {
     const update = buildNoteUpdate({
       noteId: 1,
       fields: {},
-      tags: ["organic chemistry", "acids"],
+      tags: ["organic_chemistry", "acids"],
     });
 
-    expect(update?.tags).toEqual(["organic chemistry", "acids"]);
+    expect(update?.tags).toEqual(["organic_chemistry", "acids"]);
   });
 
   // `tags: []` is a real instruction to AnkiConnect — it strips every Tag from

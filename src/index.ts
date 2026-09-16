@@ -30,6 +30,7 @@ import {
   summarizeNote,
   truncateSummary,
   validateClozeText,
+  validateTags,
 } from "./notes.js";
 import { ankiRequest } from "./ankiConnect.js";
 import { getNoteTypes } from "./noteTypeCache.js";
@@ -240,7 +241,8 @@ async function main() {
               tags: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional tags for the card",
+                description:
+                  "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
               frontImages: {
                 type: "array",
@@ -287,7 +289,8 @@ async function main() {
               tags: {
                 type: "array",
                 items: { type: "string" },
-                description: "New tags for the card",
+                description:
+                  "New tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
             },
             required: ["noteId"],
@@ -317,7 +320,8 @@ async function main() {
               tags: {
                 type: "array",
                 items: { type: "string" },
-                description: "Optional tags for the card",
+                description:
+                  "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
               textImages: {
                 type: "array",
@@ -366,7 +370,8 @@ async function main() {
               tags: {
                 type: "array",
                 items: { type: "string" },
-                description: "New tags for the card",
+                description:
+                  "New tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
               },
             },
             required: ["noteId"],
@@ -400,7 +405,8 @@ async function main() {
                     tags: {
                       type: "array",
                       items: { type: "string" },
-                      description: "Optional tags for the card",
+                      description:
+                        "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
                     },
                   },
                   required: ["front", "back"],
@@ -440,7 +446,8 @@ async function main() {
                     tags: {
                       type: "array",
                       items: { type: "string" },
-                      description: "Optional tags for the card",
+                      description:
+                        "Optional tags for the card. A tag cannot contain a space (Anki splits it into two tags) or a tab or newline (Anki removes it) - use organic_chemistry or organic::chemistry for a hierarchy.",
                     },
                   },
                   required: ["text"],
@@ -524,6 +531,8 @@ async function main() {
           backAudio = [],
         } = CreateCardArgumentsSchema.parse(args);
 
+        validateTags(tags);
+
         const { basic } = await resolveNoteTypes();
 
         // Build picture and audio arrays for AnkiConnect. The Field name here
@@ -575,6 +584,8 @@ async function main() {
         const { noteId, front, back, tags } =
           UpdateCardArgumentsSchema.parse(args);
 
+        validateTags(tags);
+
         // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
         // field, which is different from omitting the argument. A truthiness
         // check drops the clear and still reports success.
@@ -616,6 +627,7 @@ async function main() {
         } = CreateClozeCardArgumentsSchema.parse(args);
 
         validateClozeText(text);
+        validateTags(tags);
 
         const { cloze } = await resolveNoteTypes();
 
@@ -666,6 +678,10 @@ async function main() {
       if (name === "update-cloze-card") {
         const { noteId, text, backExtra, tags } =
           UpdateClozeCardArgumentsSchema.parse(args);
+
+        // Before the notesInfo round-trip: a bad tag is knowable without
+        // asking Anki anything, so it should not cost a request.
+        validateTags(tags);
 
         // Get the current note info to verify it's a cloze note
         const noteInfo = await ankiRequest<any[]>("notesInfo", {
@@ -824,6 +840,10 @@ async function main() {
       if (name === "create-cards-bulk") {
         const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
 
+        // Validate the whole batch before sending anything, so a malformed
+        // entry fails the call rather than leaving a partial batch in the deck.
+        cards.forEach((card, index) => validateTags(card.tags, index + 1));
+
         const { basic } = await resolveNoteTypes();
 
         const notes = cards.map((card) =>
@@ -849,7 +869,10 @@ async function main() {
 
         // Validate the whole batch before sending anything, so a malformed
         // entry fails the call rather than leaving a partial batch in the deck.
-        cards.forEach((card, index) => validateClozeText(card.text, index + 1));
+        cards.forEach((card, index) => {
+          validateClozeText(card.text, index + 1);
+          validateTags(card.tags, index + 1);
+        });
 
         const { cloze } = await resolveNoteTypes();
 

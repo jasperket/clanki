@@ -125,6 +125,123 @@ export function validateClozeText(text: string, position?: number): void {
   );
 }
 
+// Anki mangles a Tag containing certain whitespace, silently and in two
+// different ways. Probed against a live collection (see docs/adr/0005) across
+// every codepoint JS `\s` matches:
+//
+//   U+0020 and U+3000 SPLIT one Tag into two.
+//   U+0009 U+000A U+000B U+000C U+000D are DELETED, welding the Tag into one
+//     word: "aa\tbb" is stored as "aabb".
+//
+// Everything else `\s` matches — U+00A0, U+2028, U+202F and 17 more — is stored
+// unchanged, which is why these are explicit sets and NOT /\s/. A regex class
+// here would reject 20 kinds of Tag that Anki accepts perfectly well.
+//
+// Written as \uXXXX escapes because a literal tab or ideographic space in
+// source is invisible to a reader and does not survive a copy-paste.
+const TAG_SPLITTING_CHARS = new Set(["\u0020", "\u3000"]);
+const TAG_STRIPPED_CHARS = new Set([
+  "\u0009",
+  "\u000a",
+  "\u000b",
+  "\u000c",
+  "\u000d",
+]);
+
+// Short: a Tag is a word or two, not a URL. Long enough to recognise which Tag
+// was rejected, short enough that a crafted value cannot bury the real message.
+const MAX_TAG_DISPLAY_LENGTH = 40;
+
+// Same bound-and-sanitise intent as media.ts's excerptForDisplay, for the same
+// reason: this string is tool output, which the model reads as trusted, and a
+// Tag can originate from an LLM reading an untrusted page.
+//
+// It differs in one way that matters. media.ts drops disallowed characters, but
+// here the disallowed character is the entire point of the message — dropping a
+// space would render "organic chemistry" as "organicchemistry", showing the
+// caller a Tag they never sent and hiding the very byte being complained about.
+// So the mangling characters are made VISIBLE as \uXXXX escapes, and only
+// everything else outside the allowlist is dropped. A newline therefore appears
+// as the six literal characters \u000a and cannot forge a line of tool output.
+function tagForDisplay(tag: string): string {
+  const shown = [...tag]
+    .map((c) => {
+      if (TAG_SPLITTING_CHARS.has(c) || TAG_STRIPPED_CHARS.has(c)) {
+        return c === "\u0020"
+          ? c
+          : `\\u${c.codePointAt(0)!.toString(16).padStart(4, "0")}`;
+      }
+      return /[A-Za-z0-9_:.\-]/.test(c) ? c : "";
+    })
+    .join("");
+  const truncated = shown.slice(0, MAX_TAG_DISPLAY_LENGTH);
+  const suffix = shown.length > truncated.length ? "..." : "";
+  return truncated.length > 0 ? `"${truncated}${suffix}"` : "(unprintable)";
+}
+
+// Throws when a Tag contains whitespace Anki would mangle.
+//
+// Unlike validateClozeText this DOES name the offending value, a deliberate
+// narrowing of docs/adr/0003 argued in docs/adr/0005: a position tells the
+// caller which Tag failed but not what to write instead, and the fix depends on
+// the value. The echo is bounded by tagForDisplay above.
+//
+// The message must contain no comma. src/index.ts joins multiple validation
+// failures with ", ", so a comma inside one message is indistinguishable from
+// the boundary between two.
+//
+// Only genuinely mangling input is rejected. An empty Tag, an all-whitespace
+// Tag, a duplicate, and leading or trailing whitespace are all handled cleanly
+// by Anki (dropped, stripped, deduped), so refusing them would fail a call that
+// does no harm.
+export function validateTags(
+  tags: string[] | undefined,
+  position?: number
+): void {
+  if (tags === undefined) return;
+
+  const subject = position === undefined ? "Tag" : `Card ${position} tag`;
+
+  for (const tag of tags) {
+    // Anki strips leading and trailing whitespace and drops an all-whitespace
+    // Tag entirely, so only INTERIOR whitespace actually mangles anything.
+    // Scanning the raw value would reject "  padded  ", which Anki stores
+    // cleanly as "padded" — a call that does no harm.
+    const interior = tag.trim();
+
+    for (const char of interior) {
+      const splits = TAG_SPLITTING_CHARS.has(char);
+      const stripped = TAG_STRIPPED_CHARS.has(char);
+      if (!splits && !stripped) continue;
+
+      // Naming the replacement makes the retry deterministic. Without it the
+      // caller has to guess between organic_chemistry, organic::chemistry and
+      // OrganicChemistry, and different sessions guess differently — which
+      // fragments a Tag hierarchy, a milder form of the bug being prevented.
+      const suggestion = [...interior]
+        .map((c) =>
+          TAG_SPLITTING_CHARS.has(c) || TAG_STRIPPED_CHARS.has(c) ? "_" : c
+        )
+        .join("");
+      const effect = splits
+        ? "contains a space that Anki would split into two separate tags"
+        : "contains a tab or newline that Anki would remove from the tag";
+
+      // A truncated suggestion is worse than none: "aaaa..." is not a Tag the
+      // caller can actually send. When it does not fit, describe the fix
+      // instead of printing an unusable value.
+      const shownSuggestion = tagForDisplay(suggestion);
+      const advice = shownSuggestion.includes("...")
+        ? "replace it with an underscore"
+        : `use ${shownSuggestion} instead`;
+
+      throw new Error(
+        `${subject} ${tagForDisplay(interior)} ${effect} - ${advice}`
+      );
+    }
+  }
+}
+
 // One entry of a `canAddNotesWithErrorDetail` result.
 export interface AddabilityReport {
   canAdd: boolean;

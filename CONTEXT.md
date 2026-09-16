@@ -56,8 +56,15 @@ and AnkiConnect silently discards values written to a Field the Note Type does
 not have.
 
 **Tag**:
-A label attached to a Note, not to a Card. Tags cannot contain spaces — Anki
-treats a space as a separator between two Tags.
+A label attached to a Note, not to a Card. A Tag cannot contain a space: Anki
+treats one as a separator and stores `organic chemistry` as two Tags. A tab or
+newline is worse — Anki removes it, welding the Tag into one word. Write
+`organic_chemistry`, or `organic::chemistry` for a hierarchy. Anki also strips
+leading and trailing whitespace, drops an empty or all-whitespace Tag, dedupes
+Tags on a Note, and folds a Tag's case to whichever casing the collection saw
+first, so a Tag's exact spelling is not the caller's to choose. Enforced by
+`validateTags`; the probed behaviour is recorded in
+[ADR 0005](./docs/adr/0005-domain-invariants-live-in-the-domain-layer.md).
 
 **Cloze Deletion**:
 The `{{c1::...}}` construct inside the first Field of a Note whose Note Type
