@@ -15,11 +15,7 @@ import {
 } from "./media.js";
 import {
   AddabilityReport,
-  BASIC_FIELD_BACK,
   DELETE_BATCH_LIMIT,
-  BASIC_FIELD_FRONT,
-  CLOZE_FIELD_BACK_EXTRA,
-  CLOZE_FIELD_TEXT,
   NOTES_INFO_CHUNK_SIZE,
   NewNote,
   SEARCH_RESULT_LIMIT,
@@ -36,6 +32,36 @@ import {
   validateClozeText,
 } from "./notes.js";
 import { ankiRequest } from "./ankiConnect.js";
+import { getNoteTypes } from "./noteTypeCache.js";
+import type { NoteTypeOverrides } from "./noteTypes.js";
+
+// Escape hatch for a collection whose Note Types this server cannot identify on
+// its own - see noteTypes.ts. Read here because index.ts is the edge of the
+// program and the only place that touches process.env; noteTypes.ts stays a
+// pure function of its arguments so it can be tested without the environment.
+//
+// Naming a Note Type is the common case. CLANKI_*_FIELDS is only for a Note
+// Type whose Fields are not in front-then-back order.
+function splitFields(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  return value
+    .split(",")
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0);
+}
+
+const NOTE_TYPE_OVERRIDES: NoteTypeOverrides = {
+  basicNoteType: process.env.CLANKI_BASIC_NOTE_TYPE,
+  clozeNoteType: process.env.CLANKI_CLOZE_NOTE_TYPE,
+  basicFields: splitFields(process.env.CLANKI_BASIC_FIELDS),
+  clozeFields: splitFields(process.env.CLANKI_CLOZE_FIELDS),
+};
+
+// Which Note Type fills each Role in this user's collection. Cached after the
+// first call; resolved lazily so the server survives Anki starting later.
+function resolveNoteTypes() {
+  return getNoteTypes(NOTE_TYPE_OVERRIDES);
+}
 
 interface NoteParams {
   note: {
@@ -498,16 +524,20 @@ async function main() {
           backAudio = [],
         } = CreateCardArgumentsSchema.parse(args);
 
-        // Build picture and audio arrays for AnkiConnect
+        const { basic } = await resolveNoteTypes();
+
+        // Build picture and audio arrays for AnkiConnect. The Field name here
+        // is what Anki attaches the media to, so it must be the resolved one: a
+        // wrong name downloads the file and appends the tag nowhere.
         const pictureResults = [
-          buildMediaArray(frontImages, "Front", "image"),
-          buildMediaArray(backImages, "Back", "image"),
+          buildMediaArray(frontImages, basic.frontField, "image"),
+          buildMediaArray(backImages, basic.backField, "image"),
         ];
         const picture = pictureResults.flatMap((r) => r.items);
 
         const audioResults = [
-          buildMediaArray(frontAudio, "Front", "audio"),
-          buildMediaArray(backAudio, "Back", "audio"),
+          buildMediaArray(frontAudio, basic.frontField, "audio"),
+          buildMediaArray(backAudio, basic.backField, "audio"),
         ];
         const audio = audioResults.flatMap((r) => r.items);
 
@@ -517,6 +547,7 @@ async function main() {
             front,
             back,
             tags,
+            noteType: basic,
             picture,
             audio,
           }),
@@ -547,9 +578,11 @@ async function main() {
         // `!== undefined`, not truthiness: "" is a caller explicitly clearing a
         // field, which is different from omitting the argument. A truthiness
         // check drops the clear and still reports success.
+        const { basic } = await resolveNoteTypes();
+
         const fields: Record<string, string> = {};
-        if (front !== undefined) fields[BASIC_FIELD_FRONT] = front;
-        if (back !== undefined) fields[BASIC_FIELD_BACK] = back;
+        if (front !== undefined) fields[basic.frontField] = front;
+        if (back !== undefined) fields[basic.backField] = back;
 
         // One `updateNote` carries both halves; see buildNoteUpdate.
         const note = buildNoteUpdate({ noteId, fields, tags });
@@ -584,16 +617,19 @@ async function main() {
 
         validateClozeText(text);
 
-        // Build picture and audio arrays for AnkiConnect
+        const { cloze } = await resolveNoteTypes();
+
+        // Build picture and audio arrays for AnkiConnect. Resolved Field names,
+        // for the reason given in create-card.
         const pictureResults = [
-          buildMediaArray(textImages, "Text", "image"),
-          buildMediaArray(backImages, "Back Extra", "image"),
+          buildMediaArray(textImages, cloze.textField, "image"),
+          buildMediaArray(backImages, cloze.backExtraField, "image"),
         ];
         const picture = pictureResults.flatMap((r) => r.items);
 
         const audioResults = [
-          buildMediaArray(textAudio, "Text", "audio"),
-          buildMediaArray(backAudio, "Back Extra", "audio"),
+          buildMediaArray(textAudio, cloze.textField, "audio"),
+          buildMediaArray(backAudio, cloze.backExtraField, "audio"),
         ];
         const audio = audioResults.flatMap((r) => r.items);
 
@@ -603,6 +639,7 @@ async function main() {
             text,
             backExtra,
             tags,
+            noteType: cloze,
             picture,
             audio,
           }),
@@ -639,7 +676,9 @@ async function main() {
           throw new Error(`No note found with ID ${noteId}`);
         }
 
-        if (noteInfo[0].modelName !== "Cloze") {
+        const { cloze } = await resolveNoteTypes();
+
+        if (noteInfo[0].modelName !== cloze.noteTypeName) {
           throw new Error("This note is not a cloze deletion note");
         }
 
@@ -649,10 +688,10 @@ async function main() {
           // rejected here rather than silently dropped, since a Cloze note
           // with no deletion generates no cards.
           validateClozeText(text);
-          fields[CLOZE_FIELD_TEXT] = text;
+          fields[cloze.textField] = text;
         }
         if (backExtra !== undefined) {
-          fields[CLOZE_FIELD_BACK_EXTRA] = backExtra;
+          fields[cloze.backExtraField] = backExtra;
         }
 
         // Fields and Tags in one request; see the note on buildNoteUpdate.
@@ -785,12 +824,15 @@ async function main() {
       if (name === "create-cards-bulk") {
         const { deckName, cards } = BulkCreateCardsArgumentsSchema.parse(args);
 
+        const { basic } = await resolveNoteTypes();
+
         const notes = cards.map((card) =>
           buildBasicNote({
             deckName,
             front: card.front,
             back: card.back,
             tags: card.tags,
+            noteType: basic,
           })
         );
 
@@ -809,12 +851,15 @@ async function main() {
         // entry fails the call rather than leaving a partial batch in the deck.
         cards.forEach((card, index) => validateClozeText(card.text, index + 1));
 
+        const { cloze } = await resolveNoteTypes();
+
         const notes = cards.map((card) =>
           buildClozeNote({
             deckName,
             text: card.text,
             backExtra: card.backExtra,
             tags: card.tags,
+            noteType: cloze,
           })
         );
 

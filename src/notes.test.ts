@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  BASIC_FIELD_BACK,
-  BASIC_FIELD_FRONT,
-  CLOZE_FIELD_BACK_EXTRA,
-  CLOZE_FIELD_TEXT,
   buildBasicNote,
   buildBulkSummary,
   buildClozeNote,
@@ -16,6 +12,20 @@ import {
   truncateSummary,
   validateClozeText,
 } from "./notes.js";
+import type { BasicFill, ClozeFill } from "./noteTypes.js";
+
+// The English collection's resolution. Passed explicitly because the builders
+// no longer know any Note Type names — that is the point of issue #4's fix.
+const BASIC: BasicFill = {
+  noteTypeName: "Basic",
+  frontField: "Front",
+  backField: "Back",
+};
+const CLOZE: ClozeFill = {
+  noteTypeName: "Cloze",
+  textField: "Text",
+  backExtraField: "Back Extra",
+};
 
 const media = (filename: string) => ({
   url: `https://example.com/${filename}`,
@@ -36,35 +46,60 @@ describe("field names", () => {
       deckName: "d",
       text: "{{c1::x}}",
       backExtra: "extra",
+      noteType: CLOZE,
     });
 
     expect(note.fields["Back Extra"]).toBe("extra");
     expect(note.fields).not.toHaveProperty("Back");
   });
 
-  // Guards the constants themselves. Every other test reads field names
-  // through them, so a typo in a constant would rename the field consistently
-  // and stay invisible; these assertions are the literal spellings.
-  it("spells the built-in field names exactly", () => {
-    expect(BASIC_FIELD_FRONT).toBe("Front");
-    expect(BASIC_FIELD_BACK).toBe("Back");
-    expect(CLOZE_FIELD_TEXT).toBe("Text");
-    expect(CLOZE_FIELD_BACK_EXTRA).toBe("Back Extra");
-  });
+  // The spelling of the built-in names is no longer asserted here: they are
+  // not constants any more, because Anki translates them per collection. The
+  // equivalent guard now lives in noteTypes.test.ts, where an English
+  // collection fixture must resolve to exactly Front/Back/Text/Back Extra —
+  // which tests the whole path rather than reading a literal back.
 
-  it("writes basic notes to Front and Back", () => {
-    const note = buildBasicNote({ deckName: "d", front: "q", back: "a" });
+  it("writes basic notes to the resolved fields", () => {
+    const note = buildBasicNote({
+      deckName: "d",
+      front: "q",
+      back: "a",
+      noteType: BASIC,
+    });
 
     expect(note.fields).toEqual({ Front: "q", Back: "a" });
     expect(note.modelName).toBe("Basic");
   });
 
+  // The whole point of issue #4: nothing in the builder is English. Given a
+  // German collection's resolution it writes German field names, and a
+  // hardcoded "Front" anywhere in the builder would fail this.
+  it("writes whatever fields the collection resolved to", () => {
+    const note = buildBasicNote({
+      deckName: "d",
+      front: "q",
+      back: "a",
+      noteType: {
+        noteTypeName: "Einfach",
+        frontField: "Vorderseite",
+        backField: "Rückseite",
+      },
+    });
+
+    expect(note.fields).toEqual({ Vorderseite: "q", Rückseite: "a" });
+    expect(note.modelName).toBe("Einfach");
+  });
+
   // Omitting the field would leave a previous value in place on an update,
   // so an absent backExtra must still write an empty string.
   it("writes an empty Back Extra rather than omitting it", () => {
-    const note = buildClozeNote({ deckName: "d", text: "{{c1::x}}" });
+    const note = buildClozeNote({
+      deckName: "d",
+      text: "{{c1::x}}",
+      noteType: CLOZE,
+    });
 
-    expect(note.fields[CLOZE_FIELD_BACK_EXTRA]).toBe("");
+    expect(note.fields[CLOZE.backExtraField]).toBe("");
   });
 });
 
@@ -76,6 +111,7 @@ describe("media attachment", () => {
       deckName: "d",
       front: "q",
       back: "a",
+      noteType: BASIC,
       picture: [],
       audio: [],
     });
@@ -88,6 +124,7 @@ describe("media attachment", () => {
     const note = buildClozeNote({
       deckName: "d",
       text: "{{c1::x}}",
+      noteType: CLOZE,
       picture: [media("image_1.jpg")],
       audio: [media("audio_1.mp3")],
     });
@@ -100,7 +137,8 @@ describe("media attachment", () => {
 describe("tags", () => {
   it("defaults to an empty array so the key is always present", () => {
     expect(
-      buildBasicNote({ deckName: "d", front: "q", back: "a" }).tags
+      buildBasicNote({ deckName: "d", front: "q", back: "a", noteType: BASIC })
+        .tags
     ).toEqual([]);
   });
 });
@@ -317,13 +355,13 @@ describe("note updates", () => {
   it("carries fields and tags in a single payload", () => {
     const update = buildNoteUpdate({
       noteId: 1,
-      fields: { [BASIC_FIELD_FRONT]: "f" },
+      fields: { [BASIC.frontField]: "f" },
       tags: ["a"],
     });
 
     expect(update).toEqual({
       id: 1,
-      fields: { [BASIC_FIELD_FRONT]: "f" },
+      fields: { [BASIC.frontField]: "f" },
       tags: ["a"],
     });
   });
@@ -354,7 +392,7 @@ describe("note updates", () => {
   it("omits the tags key entirely when tags were not supplied", () => {
     const update = buildNoteUpdate({
       noteId: 1,
-      fields: { [BASIC_FIELD_FRONT]: "f" },
+      fields: { [BASIC.frontField]: "f" },
     });
 
     expect(update).not.toBeNull();
@@ -375,10 +413,10 @@ describe("note updates", () => {
   it("keeps a field explicitly cleared to an empty string", () => {
     const update = buildNoteUpdate({
       noteId: 1,
-      fields: { [BASIC_FIELD_BACK]: "" },
+      fields: { [BASIC.backField]: "" },
     });
 
-    expect(update?.fields).toEqual({ [BASIC_FIELD_BACK]: "" });
+    expect(update?.fields).toEqual({ [BASIC.backField]: "" });
   });
 
   // `updateNote` rejects a Note carrying neither fields nor tags with 'Must
@@ -397,8 +435,8 @@ describe("note updates", () => {
     const update = buildNoteUpdate({
       noteId: 1,
       fields: {
-        [CLOZE_FIELD_TEXT]: "{{c1::x}}",
-        [CLOZE_FIELD_BACK_EXTRA]: "extra",
+        [CLOZE.textField]: "{{c1::x}}",
+        [CLOZE.backExtraField]: "extra",
       },
     });
 
@@ -443,37 +481,108 @@ describe("note summaries", () => {
     expect(summary.back).toBe("[Cloze deletion]");
   });
 
-  // Anki lets users rename a Note Type's fields, so a Note whose type is
-  // "Basic" is not guaranteed to carry Front/Back. Before the optional
-  // chaining, one renamed field threw inside the caller's .map() and failed the
-  // entire deck read rather than the single note.
-  it("does not throw on a Basic note with renamed fields", () => {
+  // Used to return "[Missing field]" twice: the reader matched on the names
+  // Front/Back, which a renamed Note Type does not carry. It now reads the
+  // Note's own fields in order, so renamed fields show their real content.
+  it("shows the content of a Basic note with renamed fields", () => {
     const summary = summarizeNote({
       noteId: 1,
       modelName: "Basic",
-      fields: { Question: { value: "q" }, Answer: { value: "a" } },
+      fields: {
+        Question: { value: "q", order: 0 },
+        Answer: { value: "a", order: 1 },
+      },
       tags: [],
     });
 
-    expect(summary.front).toBe("[Missing field]");
-    expect(summary.back).toBe("[Missing field]");
+    expect(summary.front).toBe("q");
+    expect(summary.back).toBe("a");
   });
 
-  // A custom Note Type still has to stay addressable: the caller cannot read
-  // its fields, but it must still be able to find the note to edit or delete
-  // it, which needs the id.
-  it("keeps the note id for an unknown note type", () => {
+  // Issue #4's second, unreported half. Every Note in a German collection used
+  // to render as "[Unknown note type]", because the reader compared against the
+  // English names. Nothing here is English.
+  it("shows the content of a note from a translated collection", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Einfach",
+      fields: {
+        Vorderseite: { value: "Frage", order: 0 },
+        Rückseite: { value: "Antwort", order: 1 },
+      },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("Frage");
+    expect(summary.back).toBe("Antwort");
+  });
+
+  // A translated Cloze Note is recognised by its content, since its Note Type
+  // name is no longer a reliable signal.
+  it("labels a translated cloze note with no extra content", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Lückentext",
+      fields: {
+        Text: { value: "Die Hauptstadt ist {{c1::Paris}}", order: 0 },
+        Extra: { value: "", order: 1 },
+      },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("Die Hauptstadt ist {{c1::Paris}}");
+    expect(summary.back).toBe("[Cloze deletion]");
+  });
+
+  // Field order comes from Anki, not from object key order, which is what
+  // makes "the first field is the front" true in any language.
+  it("orders fields by Anki's own order, not key order", () => {
+    const summary = summarizeNote({
+      noteId: 1,
+      modelName: "Einfach",
+      fields: {
+        Rückseite: { value: "back", order: 1 },
+        Vorderseite: { value: "front", order: 0 },
+      },
+      tags: [],
+    });
+
+    expect(summary.front).toBe("front");
+    expect(summary.back).toBe("back");
+  });
+
+  // A custom Note Type stays addressable, and now also readable: its first
+  // field is shown rather than a placeholder. The id is what matters, since a
+  // caller must be able to find the note to edit or delete it.
+  it("keeps the note id and shows content for a custom note type", () => {
     const summary = summarizeNote({
       noteId: 99,
       modelName: "My Custom Type",
-      fields: { Whatever: { value: "x" } },
+      fields: { Whatever: { value: "x", order: 0 } },
       tags: ["t"],
     });
 
     expect(summary.noteId).toBe(99);
     expect(summary.noteType).toBe("My Custom Type");
     expect(summary.tags).toEqual(["t"]);
+    expect(summary.front).toBe("x");
+    // Only one field, so there is no back to show.
+    expect(summary.back).toBe("[Missing field]");
+  });
+
+  // A Note with no fields at all is unresolvable — nothing to read — so it
+  // still falls back to placeholders and stays listed by id.
+  it("falls back to placeholders for a note with no fields", () => {
+    const summary = summarizeNote({
+      noteId: 99,
+      modelName: "Weird",
+      fields: {},
+      tags: [],
+    });
+
+    expect(summary.noteId).toBe(99);
     expect(summary.front).toBe("[Unknown note type]");
+    expect(summary.back).toBe("[Unknown note type]");
   });
 
   // `modelName` is the AnkiConnect wire spelling and stops at this boundary;
