@@ -16,7 +16,9 @@ segment becomes the literal word `blank` (`::a` is stored as `blank::a`), and
 whitespace around a separator is trimmed (`a :: b` is stored as `a::b`). An
 empty or all-whitespace name is not refused either -- it produces a Deck named
 `blank` -- so `validateDeckName` rejects it before Anki invents one. Unlike a
-Tag, a Deck name may contain a space. The probed behaviour is re-checkable with
+Tag, a Deck name may contain a space. Reading a Deck returns the Notes of that
+Deck and of every Deck nested inside it, so reading `Biology` also returns what
+is in `Biology::Cells`. The probed behaviour is re-checkable with
 `npm run probe:decks`.
 _Avoid_: collection (in Anki that means the entire database, not one deck)
 

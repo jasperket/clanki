@@ -8,6 +8,7 @@ import {
   buildSearchSummary,
   partitionAddable,
   partitionExistingNotes,
+  quoteSearchTerm,
   summarizeNote,
   truncateSummary,
   validateClozeText,
@@ -360,6 +361,82 @@ describe("deck name validation", () => {
     } catch (error) {
       expect((error as Error).message).not.toContain(",");
     }
+  });
+});
+
+// No "message contains no comma" test in this block: quoteSearchTerm returns a
+// value and never throws, so there is no message to constrain.
+describe("search term quoting", () => {
+  // The reported bug in issue #24. Anki ends a term at an unquoted space, so
+  // `deck:Spanish Verbs` searches a different Deck and silently returns the
+  // wrong Notes or none.
+  it("wraps a term containing a space in double quotes", () => {
+    expect(quoteSearchTerm("Spanish Verbs")).toBe('"Spanish Verbs"');
+  });
+
+  // Probed: Anki rejects the query outright with "an opening double quote was
+  // found but there was no second one to close it". Unlike the other cases this
+  // one fails loudly rather than silently -- but it still cannot be left alone.
+  it("escapes a double quote so it cannot close the quoted term", () => {
+    expect(quoteSearchTerm('quote"deck')).toBe('"quote\\"deck"');
+  });
+
+  // Probed: a Deck named `probe_s*x` matched THREE decks unescaped and one
+  // escaped. This is the half of issue #24 that returns the wrong Notes rather
+  // than none, which is the worse failure because it looks like an answer.
+  it("escapes a star so a deck name is not read as a wildcard", () => {
+    expect(quoteSearchTerm("star*deck")).toBe('"star\\*deck"');
+  });
+
+  // Probed: a Deck named `probe_u_x` matched a decoy named `probe_uZx` as well,
+  // returning two Notes where one was correct. `_` is Anki's single-character
+  // wildcard, and `my_deck` is an ordinary name.
+  it("escapes an underscore so it is not a single-character wildcard", () => {
+    expect(quoteSearchTerm("my_deck")).toBe('"my\\_deck"');
+  });
+
+  // The ordering guard. A backslash escaped LAST would also escape the
+  // backslashes the other steps introduced, turning `\"` into `\\"` and
+  // breaking the term. The input holds both characters so a reversed order
+  // produces a visibly different string instead of passing by luck.
+  it("escapes a backslash before anything else", () => {
+    expect(quoteSearchTerm('a\\"b')).toBe('"a\\\\\\"b"');
+  });
+
+  // Probed: a lone colon matched exactly one Deck whether escaped or not, and
+  // CONTEXT.md records that a colon is legal in a Deck name. Quoting the value
+  // alone means Anki consumes the `deck:` key before the quote opens, so a
+  // colon inside is already plain data. ADR 0005: do not mangle what Anki
+  // handles fine.
+  it("leaves a colon alone because the quoting form already disarms it", () => {
+    expect(quoteSearchTerm("colon:deck")).toBe('"colon:deck"');
+  });
+
+  // Nesting is a documented Anki feature, not input to constrain -- the same
+  // reasoning as the nested-name case in deck name validation. The separator
+  // must survive so a nested Deck stays findable.
+  it("leaves a nested deck separator intact", () => {
+    expect(quoteSearchTerm("Biology::Cells")).toBe('"Biology::Cells"');
+  });
+
+  // The tripwire against applying the manual's entity rule to a Deck name. That
+  // rule is for matching Note content, where Anki stores HTML-escaped field
+  // text. Converting here would make a Deck named `Tom & Jerry` unfindable.
+  it("does not convert ampersands or angle brackets to HTML entities", () => {
+    expect(quoteSearchTerm("Tom & Jerry")).toBe('"Tom & Jerry"');
+    expect(quoteSearchTerm("a<b>c")).toBe('"a<b>c"');
+  });
+
+  // The tripwire in the other direction. The manual lists these as needing
+  // escapes, but only OUTSIDE a quoted term; inside one they are literal
+  // already, so escaping them would put a real backslash into the match.
+  it("does not escape parentheses or a hyphen", () => {
+    expect(quoteSearchTerm("Chem (2024)")).toBe('"Chem (2024)"');
+    expect(quoteSearchTerm("sugar-free")).toBe('"sugar-free"');
+  });
+
+  it("leaves a plain term unchanged apart from the quotes", () => {
+    expect(quoteSearchTerm("Default")).toBe('"Default"');
   });
 });
 

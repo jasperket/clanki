@@ -27,15 +27,30 @@ import {
   buildSearchSummary,
   partitionAddable,
   partitionExistingNotes,
+  quoteSearchTerm,
   summarizeNote,
   truncateSummary,
   validateClozeText,
   validateDeckName,
   validateTags,
 } from "./notes.js";
-import { ankiRequest } from "./ankiConnect.js";
+import { AnkiConnectError, ankiRequest } from "./ankiConnect.js";
 import { getNoteTypes } from "./noteTypeCache.js";
 import type { NoteTypeOverrides } from "./noteTypes.js";
+
+// A deck resource was asked for by a name the collection does not have.
+//
+// Named so the ReadResource catch can recognise it without matching on message
+// text, the same reason AnkiConnectError exists in ankiConnect.ts. The catch
+// appends "make sure Anki is running" to a genuine transport failure, which
+// would be actively misleading here: Anki answered perfectly well and the name
+// is simply not in it.
+class MissingDeckError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingDeckError";
+  }
+}
 
 // Escape hatch for a collection whose Note Types this server cannot identify on
 // its own - see noteTypes.ts. Read here because index.ts is the edge of the
@@ -741,6 +756,11 @@ async function main() {
       if (name === "find-cards") {
         const { query } = FindCardsArgumentsSchema.parse(args);
 
+        // `quoteSearchTerm` is deliberately NOT applied here. This argument is
+        // the caller's own search syntax, so quoting it would turn
+        // `deck:Spanish tag:verbs` into a search for a Deck literally named
+        // that. The helper is for a term this server built from a name it
+        // already has -- see its comment in notes.ts and issue #24.
         const noteIds = await ankiRequest<number[]>("findNotes", { query });
 
         // The query is the caller's own text, so repeating it is not a fresh
@@ -959,14 +979,40 @@ async function main() {
       const deckName = decodeURIComponent(match[1]);
       console.error(`Attempting to fetch notes for deck: ${deckName}`);
 
-      // Find all notes in the deck
+      // Find all notes in the deck.
+      //
+      // The name is quoted because Anki ends a search term at an unquoted
+      // space, which made every Deck whose name contains one read as empty --
+      // issue #24. This also matches every Deck nested inside this one, which
+      // is Anki's own `deck:` behaviour and what a caller reading a parent
+      // Deck expects (CONTEXT.md: Deck).
       const noteIds = await ankiRequest<number[]>("findNotes", {
-        query: `deck:${deckName}`,
+        query: `deck:${quoteSearchTerm(deckName)}`,
       });
 
       console.error(`Found ${noteIds.length} notes in deck ${deckName}`);
 
       if (noteIds.length === 0) {
+        // An empty result is the one ambiguous answer: the Deck exists and
+        // holds nothing, or there is no such Deck. `deckName` comes from the
+        // caller's URI and has never been checked against the collection, so
+        // both are possible and they need different messages.
+        //
+        // The check lives HERE and not above the search on purpose. On a Deck
+        // that has Notes it costs nothing, and a `deckNames` that fails or lags
+        // can never turn a real Deck into a false "does not exist" -- it would
+        // only do so on a path where the read already returned nothing.
+        const deckNames = await ankiRequest<string[]>("deckNames");
+
+        // Exact match. ListResources builds the URI from this same list, so a
+        // round-tripped URI matches exactly; a looser comparison would reopen
+        // the prefix collision the quoting above just closed.
+        if (!deckNames.includes(deckName)) {
+          throw new MissingDeckError(
+            `No deck named "${deckName}" exists in this collection - list the deck resources to see the available names.`
+          );
+        }
+
         return {
           contents: [
             {
@@ -1038,6 +1084,18 @@ async function main() {
       };
     } catch (error) {
       console.error(`Error reading deck: ${error}`);
+
+      // "Make sure Anki is running" only helps when not reaching Anki is a
+      // plausible cause. Two errors here prove the opposite -- Anki answered,
+      // and the answer was the problem -- so they are surfaced as they are
+      // rather than sending the caller to check a connection that is fine.
+      if (
+        error instanceof MissingDeckError ||
+        error instanceof AnkiConnectError
+      ) {
+        throw error;
+      }
+
       throw new Error(
         `Failed to read deck: ${
           error instanceof Error ? error.message : "Unknown error"
