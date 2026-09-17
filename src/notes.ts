@@ -277,6 +277,70 @@ export function validateDeckName(deckName: string): void {
   );
 }
 
+// The characters that must be backslash-escaped inside a quoted search term,
+// in the order they are applied.
+//
+// The backslash MUST come first. Escaping it after the others would also escape
+// the backslashes those steps just introduced, turning `\"` into `\\"` and
+// breaking the term. This ordering is load-bearing; see the test named "escapes
+// a backslash before anything else".
+const SEARCH_TERM_ESCAPES = ["\\", '"', "*", "_"];
+
+// Wraps a value in double quotes for use as one term of an Anki search, so a
+// name this server already knows cannot be re-read as search syntax.
+//
+// Without this, `deck:${name}` is a silent wrong answer rather than an error.
+// Anki ends a search term at an unquoted space, so a Deck named `Spanish Verbs`
+// is searched as `deck:Spanish` plus the loose term `Verbs` -- which matches a
+// different set of Notes, or none, and the caller cannot tell that from an
+// empty Deck. Where names collide by prefix it is worse: `Spanish Verbs`
+// returns the Notes of a Deck named `Spanish`. Filed as issue #24.
+//
+// Probed against a live collection, because the Anki manual lists characters
+// that need escaping without saying which of them still matter once the term is
+// quoted, and ADR 0005's rule is not to reject or mangle what Anki handles fine.
+// Each case used a decoy Deck whose name differed only where the character
+// would act as a wildcard:
+//
+//   `_`  unescaped matched 2 Decks, escaped 1  -- escaped, it is a one-character wildcard
+//   `*`  unescaped matched 3 Decks, escaped 1  -- escaped, it is a multi-character wildcard
+//   `"`  unescaped is rejected by Anki outright -- escaped, it would close the term
+//   `:`  unescaped matched 1 Deck, escaped 1   -- NOT escaped, it is already plain data here
+//
+// The `:` result is why the quoting form is `deck:"name"` and not the equally
+// documented `"deck:name"`. Quoting the value alone means Anki has consumed the
+// `deck:` key before the quote opens, so a colon inside is unambiguous -- and a
+// lone colon is legal in a Deck name (CONTEXT.md, Deck). Quoting the whole term
+// would put the key inside the quotes and bring that ambiguity back.
+//
+// Deliberately NOT escaped, so this stays a quoting helper and not a mangler:
+//   - `(` `)` `-` are special only OUTSIDE a quoted term. Inside one they are
+//     literal already, so escaping them would at best do nothing and at worst
+//     put a real backslash into the match.
+//   - `&` `<` `>` are HTML entities only when matching Note CONTENT, where Anki
+//     stores escaped field text. A Deck name is not HTML and round-trips
+//     unchanged, so converting them would make a Deck named `Tom & Jerry`
+//     unfindable.
+//
+// SCOPE: this is for a term this server built from a name it already has. It
+// must NEVER be applied to the `query` argument of find-cards, where the caller
+// is deliberately writing search syntax -- quoting that would turn
+// `deck:Spanish tag:verbs` into a search for a Deck literally named that. See
+// the comment at that call site in src/index.ts.
+//
+// Returns the quotes as well as the escapes, so a caller writes
+// `deck:${quoteSearchTerm(name)}` and cannot forget to quote the result.
+//
+// Re-checkable with `npm run probe:decks`.
+export function quoteSearchTerm(term: string): string {
+  let escaped = term;
+  for (const character of SEARCH_TERM_ESCAPES) {
+    escaped = escaped.split(character).join(`\\${character}`);
+  }
+
+  return `"${escaped}"`;
+}
+
 // One entry of a `canAddNotesWithErrorDetail` result.
 export interface AddabilityReport {
   canAdd: boolean;
