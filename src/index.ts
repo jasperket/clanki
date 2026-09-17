@@ -34,7 +34,11 @@ import {
   validateDeckName,
   validateTags,
 } from "./notes.js";
-import { AnkiConnectError, ankiRequest } from "./ankiConnect.js";
+import {
+  AnkiConnectError,
+  UnconfirmedWriteError,
+  ankiRequest,
+} from "./ankiConnect.js";
 import { getNoteTypes } from "./noteTypeCache.js";
 import type { NoteTypeOverrides } from "./noteTypes.js";
 
@@ -196,7 +200,25 @@ async function addNoteBatch(
     return buildBulkSummary({ added: 0, rejected, deckName });
   }
 
-  await ankiRequest<(number | null)[]>("addNotes", { notes: addable });
+  // The one call here that cannot be safely retried, so the one that can end in
+  // "we do not know" rather than success or failure (issue #23).
+  //
+  // The wording IS the fix. Without a retry the duplicate is gone, but the
+  // ambiguity is not -- it has only moved to the caller, who is usually an
+  // assistant whose reflex on the word "failed" is to send the batch again. So
+  // the message says the outcome is unknown rather than failed, and names the
+  // exact check to run instead. The Deck is interpolated because the caller
+  // needs a query it can use, not a description of one.
+  try {
+    await ankiRequest<(number | null)[]>("addNotes", { notes: addable });
+  } catch (error) {
+    if (error instanceof UnconfirmedWriteError) {
+      throw new Error(
+        `The notes were sent but no reply came back so it is not known whether they were added. They may already be in the deck. Run find-cards with deck:${quoteSearchTerm(deckName)} to check before sending them again - a blind retry would add them twice. Underlying error: ${error.message}`
+      );
+    }
+    throw error;
+  }
 
   return buildBulkSummary({ added: addable.length, rejected, deckName });
 }
