@@ -49,9 +49,43 @@ npm run build
 
 ## Setup
 
-1. Make sure Anki is running and the AnkiConnect plugin is installed and enabled
+1. Make sure Anki is running and the AnkiConnect plugin is installed and enabled.
 
-2. Configure Claude for Desktop to use the server by editing `claude_desktop_config.json`:
+2. Note the absolute path to `build/index.js` in your clanki checkout. Every
+   client below needs it, and none of them accept a relative path — they do not
+   run from your project directory, so `./build/index.js` will not resolve.
+
+   ```bash
+   # from the clanki directory
+   node -e "console.log(require('path').resolve('build/index.js'))"
+   ```
+
+   On Windows this prints backslashes. They are fine as-is for the two CLI
+   commands below, but must be doubled or swapped for forward slashes if you
+   paste the path into a JSON config — see the Claude Desktop note.
+
+3. Register the server with your client, using one of the sections below.
+
+4. Verify the server can reach Anki. With Anki running:
+
+```bash
+curl -X POST http://127.0.0.1:8765 -d "{\"action\":\"version\",\"version\":6}"
+```
+
+A working setup replies `{"result": 6, "error": null}`. If it does not, see
+[docs/troubleshooting.md](docs/troubleshooting.md) — connection failures are by
+far the most common problem, and AnkiConnect's default configuration needs no
+changes.
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json`:
+
+| Platform | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
 
 ```json
 {
@@ -64,18 +98,72 @@ npm run build
 }
 ```
 
-Replace `/absolute/path/to/clanki` with the actual path to your clanki installation.
+Replace `/absolute/path/to/clanki` with the actual path to your clanki
+installation. On Windows, write the path with either forward slashes or escaped
+backslashes (`C:\\Users\\you\\clanki\\build\\index.js`) — a single backslash is
+an escape character in JSON and will not parse.
 
-3. Verify the server can reach Anki. With Anki running:
+Restart Claude Desktop afterwards; it reads the config only at startup.
+
+### Claude Code
 
 ```bash
-curl -X POST http://127.0.0.1:8765 -d "{\"action\":\"version\",\"version\":6}"
+claude mcp add clanki -- node /absolute/path/to/clanki/build/index.js
 ```
 
-A working setup replies `{"result": 6, "error": null}`. If it does not, see
-[docs/troubleshooting.md](docs/troubleshooting.md) — connection failures are by
-far the most common problem, and AnkiConnect's default configuration needs no
-changes.
+The `--` is required. It marks the end of `claude mcp add`'s own options, so
+everything after it is treated as the command to launch. Without it the
+arguments are parsed as options to `claude mcp add` itself and you get a broken
+entry rather than an error.
+
+By default this registers the server for you in the current project only
+(`--scope local`). Two other scopes are available:
+
+| Scope | What it does |
+| --- | --- |
+| `--scope local` | You, in this project only. The default. |
+| `--scope user` | You, in every project on this machine. |
+| `--scope project` | Written to `.mcp.json` in the repo root, for committing so teammates get it too. |
+
+Check it worked:
+
+```bash
+claude mcp list
+```
+
+`clanki` should be listed as connected. If it is listed as failed to connect,
+`claude mcp get clanki` shows the error.
+
+You can also write `.mcp.json` by hand instead, using the same shape as the
+Claude Desktop config above. Claude Code reads it at session start, so restart
+the session after editing it.
+
+### Codex
+
+```bash
+codex mcp add clanki -- node /absolute/path/to/clanki/build/index.js
+```
+
+As with Claude Code, the `--` separates Codex's own options from the command
+that launches the server, and is required.
+
+This writes to `~/.codex/config.toml`. Codex uses TOML rather than JSON, so if
+you prefer to edit the file directly the entry looks like this:
+
+```toml
+[mcp_servers.clanki]
+command = "node"
+args = ["/absolute/path/to/clanki/build/index.js"]
+```
+
+Note that the TOML table is `mcp_servers` with an underscore, not `mcpServers`
+as in the JSON configs above.
+
+List the configured servers with:
+
+```bash
+codex mcp list
+```
 
 ## Configuration
 
@@ -115,8 +203,10 @@ collection at startup, so a typo is reported rather than silently losing content
 
 Set this only if you changed AnkiConnect's port or reach Anki on another machine.
 
-Variables go in the `env` block of your MCP server config, alongside `command`
-and `args`:
+Where the variables go depends on your client.
+
+In the JSON configs (Claude Desktop, and `.mcp.json` for Claude Code), they go
+in an `env` block alongside `command` and `args`:
 
 ```json
 {
@@ -130,6 +220,28 @@ and `args`:
     }
   }
 }
+```
+
+In `~/.codex/config.toml`, they go in an `env` sub-table under the server:
+
+```toml
+[mcp_servers.clanki]
+command = "node"
+args = ["/path/to/clanki/build/index.js"]
+
+[mcp_servers.clanki.env]
+CLANKI_BASIC_NOTE_TYPE = "Einfach"
+```
+
+Both CLIs can set them when you register the server, with `--env` repeated once
+per variable:
+
+```bash
+claude mcp add clanki --env CLANKI_BASIC_NOTE_TYPE=Einfach -- node /path/to/clanki/build/index.js
+```
+
+```bash
+codex mcp add clanki --env CLANKI_BASIC_NOTE_TYPE=Einfach -- node /path/to/clanki/build/index.js
 ```
 
 Restart the server after changing them.
