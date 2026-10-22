@@ -172,28 +172,11 @@ optional.
 
 ### Using Anki in a language other than English
 
-Anki translates the names of its built-in note types, and their fields, when a
-collection is created — a German collection has `Einfach` with the fields
-`Vorderseite` and `Rückseite`, not `Basic` with `Front` and `Back`. Clanki finds
-them by their structure rather than their names, so this works with no setup
-whatever language you use.
-
-If your collection contains several note types that look alike, Clanki cannot
-tell which you meant. It stops and lists the candidates rather than guessing,
-because guessing wrong would write your text into a field that does not exist,
-and Anki discards it without an error. Name the one you want:
-
-| Variable | What it does |
-| --- | --- |
-| `CLANKI_BASIC_NOTE_TYPE` | Note type for ordinary two-sided notes, e.g. `Einfach` |
-| `CLANKI_CLOZE_NOTE_TYPE` | Note type for cloze notes, e.g. `Lückentext` |
-| `CLANKI_BASIC_FIELDS` | Its two fields, front first, e.g. `Vorderseite,Rückseite` |
-| `CLANKI_CLOZE_FIELDS` | Its two fields, text first, e.g. `Text,Extra` |
-
-Naming the note type is usually enough — Clanki reads its fields from your
-collection in order. The `_FIELDS` variables are only needed for a note type
-whose fields are not in front-then-back order. Both are checked against your
-collection at startup, so a typo is reported rather than silently losing content.
+Clanki works with translated collections (e.g. German `Einfach` instead of
+`Basic`) with no setup. If your collection has several look-alike note types,
+you name the one to use with the `CLANKI_BASIC_NOTE_TYPE`,
+`CLANKI_CLOZE_NOTE_TYPE`, `CLANKI_BASIC_FIELDS` and `CLANKI_CLOZE_FIELDS`
+variables — see [docs/non-english-anki.md](docs/non-english-anki.md).
 
 ### Connecting to AnkiConnect elsewhere
 
@@ -415,20 +398,6 @@ belong to, after any text. You cannot position an image inline with HTML,
 because the filename is generated at upload time and is not known in advance.
 HTML formatting and media attachments therefore do not compose: use HTML to
 format your text, and the media parameters to attach files after it.
-
-## Known Issue: Missing Back Extra on Older Cloze Cards
-
-Earlier versions wrote the `backExtra` value to a field named `Back`. Anki's
-built-in Cloze note type has no such field — its fields are `Text` and
-`Back Extra` — and AnkiConnect silently discards values sent to a field that
-does not exist.
-
-As a result, **cloze cards created before this fix have no extra content
-stored**, even though the card was reported as created successfully. The text
-was never written to Anki, so it cannot be recovered automatically; re-entering
-it on the affected cards is the only fix.
-
-Cloze cards created from this version onward store `backExtra` correctly.
 
 ## Development
 
